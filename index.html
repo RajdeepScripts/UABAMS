@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session UI · Multi‑Sensor Channels</title>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        body {
+            background-color: #1e1e1e;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .menu-bar {
+            display: flex;
+            background-color: #2d2d2d;
+            border-bottom: 2px solid #3c3c3c;
+            padding: 8px 16px;
+            gap: 24px;
+            flex-shrink: 0;
+            z-index: 100;
+        }
+
+        .menu-item {
+            color: #cccccc;
+            font-size: 1.1rem;
+            padding: 4px 8px;
+            cursor: default;
+            border-bottom: 2px solid transparent;
+            position: relative;
+        }
+
+        .menu-item.active {
+            color: #ffffff;
+            border-bottom: 2px solid #4ec9b0;
+            text-shadow: 0 0 5px #4ec9b080;
+        }
+
+        .dropdown {
+            position: relative;
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background-color: #2d2d2d;
+            min-width: 220px;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+            z-index: 200;
+            padding: 4px 0;
+        }
+
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
+
+        .dropdown-item {
+            color: #cccccc;
+            padding: 8px 16px;
+            text-decoration: none;
+            display: block;
+            font-size: 0.95rem;
+            border-left: 3px solid transparent;
+            transition: 0.1s ease;
+            cursor: pointer;
+        }
+
+        .dropdown-item:hover {
+            background-color: #3a3a3a;
+            color: #ffffff;
+            border-left: 3px solid #4ec9b0;
+        }
+
+        .dropdown-item.active {
+            background-color: #3a3a3a;
+            color: #4ec9b0;
+            border-left: 3px solid #4ec9b0;
+            font-weight: bold;
+        }
+
+        .main-area {
+            display: flex;
+            flex: 1;
+            padding: 20px;
+            gap: 20px;
+            background-color: #1e1e1e;
+            min-height: 0;
+        }
+
+        .left-window {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 20px 24px;
+            width: 480px;
+            flex-shrink: 0;
+            overflow-y: auto;
+            color: #cccccc;
+            box-shadow: 4px 4px 10px rgba(0,0,0,0.7);
+        }
+
+        .left-window h1 {
+            color: #9cdcf1;
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #3c3c3c;
+            padding-bottom: 6px;
+            text-transform: uppercase;
+        }
+
+        .left-window h2 {
+            color: #4ec9b0;
+            font-size: 1.4rem;
+            margin: 18px 0 8px 0;
+            border-left: 3px solid #4ec9b0;
+            padding-left: 8px;
+        }
+
+        .left-window h3 {
+            color: #ce9178;
+            font-size: 1.2rem;
+            margin: 16px 0 6px 0;
+            padding-left: 4px;
+        }
+
+        .left-window ul {
+            list-style: none;
+            margin-left: 8px;
+        }
+
+        .left-window li {
+            font-size: 1rem;
+            line-height: 1.6;
+            white-space: nowrap;
+        }
+
+        .left-window li::before {
+            content: "– ";
+            color: #4ec9b0;
+            font-weight: bold;
+            margin-left: -4px;
+        }
+
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            min-width: 0;
+            height: 100%;
+        }
+
+        .status-bar {
+            background-color: #0f0f0f;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 10px 16px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            color: #9cdcf1;
+            flex-shrink: 0;
+        }
+
+        .status-left {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .status-left span {
+            color: white;
+            background-color: #2a2a2a;
+            padding: 4px 10px;
+            border-radius: 12px;
+            border-left: 2px solid #4ec9b0;
+        }
+
+        .status-right {
+            color: #ce9178;
+            font-weight: bold;
+            background-color: #2a2a2a;
+            padding: 4px 12px;
+            border-radius: 16px;
+            border: 1px solid #4ec9b0;
+        }
+
+        .graphs-stack {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-height: 0;
+        }
+
+        .graph-card {
+            flex: 1 1 0;
+            background-color: #0f0f0f;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 8px 12px 6px 12px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: inset 0 0 8px rgba(0,0,0,0.6);
+            min-height: 120px;
+        }
+
+        .graph-title {
+            color: #4ec9b0;
+            font-size: 0.9rem;
+            font-weight: bold;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            border-left: 3px solid #4ec9b0;
+            padding-left: 6px;
+            flex-shrink: 0;
+        }
+
+        .chart-wrapper {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+            width: 100%;
+        }
+
+        canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+            background-color: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 3px;
+        }
+
+        @media (max-width: 1000px) {
+            .main-area {
+                flex-direction: column;
+            }
+            .left-window {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top menu bar with dropdown under Session -->
+    <div class="menu-bar">
+        <div class="menu-item">File</div>
+        <!-- Session dropdown with three items -->
+        <div class="menu-item dropdown active">
+            <span>Session</span>
+            <div class="dropdown-content" id="sessionDropdown">
+                <a class="dropdown-item active" data-channel="accelerometer">Accelerometer channels</a>
+                <a class="dropdown-item" data-channel="gyroscope">Gyroscope channels</a>
+                <a class="dropdown-item" data-channel="temperature">Temperature sensors</a>
+            </div>
+        </div>
+        <div class="menu-item">View</div>
+        <div class="menu-item">Systems</div>
+        <div class="menu-item">Debug</div>
+    </div>
+
+    <div class="main-area">
+        <!-- left window unchanged -->
+        <div class="left-window">
+            <h1>左侧窗口</h1>
+            <h2>General</h2>
+            <ul>
+                <li>RT16101011 South Central RDM-SEGM UP (SC)</li>
+                <li>Date and Time: 2/10/2026 9:14 AM</li>
+                <li>B: 141 km 556</li>
+            </ul>
+            <h3>South Central</h3>
+            <ul>
+                <li>Coordinate: 270 km 515 m</li>
+                <li>Decreasing: On the left</li>
+                <li>Increasing: On the right</li>
+                <li>Speed: 85.25 km/h</li>
+                <li>Section: 3703844</li>
+                <li>ID: 1032.28 J</li>
+            </ul>
+            <h3>RT-SEGM UP (SC)</h3>
+            <ul>
+                <li>ID: 6101011</li>
+                <li>Cat: 0</li>
+                <li>ITMS: 8001</li>
+                <li>Responsible:</li>
+            </ul>
+        </div>
+
+        <!-- right panel with four stacked graphs -->
+        <div class="right-panel">
+            <div class="status-bar">
+                <div class="status-left">
+                    <span>270 km 515 m</span>
+                    <span>17 mm</span>
+                    <span>10:32:28</span>
+                    <span>85 km/h</span>
+                </div>
+                <div class="status-right">
+                    ROM-SEGM UP (SC)  130 km/h, B
+                </div>
+            </div>
+
+            <div class="graphs-stack">
+                <!-- Graph 1 -->
+                <div class="graph-card">
+                    <div class="graph-title" id="title1">AB_LEFT VERTICAL</div>
+                    <div class="chart-wrapper">
+                        <canvas id="chart1"></canvas>
+                    </div>
+                </div>
+                <!-- Graph 2 -->
+                <div class="graph-card">
+                    <div class="graph-title" id="title2">AB_LEFT LATERAL</div>
+                    <div class="chart-wrapper">
+                        <canvas id="chart2"></canvas>
+                    </div>
+                </div>
+                <!-- Graph 3 -->
+                <div class="graph-card">
+                    <div class="graph-title" id="title3">AB_RIGHT VERTICAL</div>
+                    <div class="chart-wrapper">
+                        <canvas id="chart3"></canvas>
+                    </div>
+                </div>
+                <!-- Graph 4 -->
+                <div class="graph-card">
+                    <div class="graph-title" id="title4">AB_RIGHT LATERAL</div>
+                    <div class="chart-wrapper">
+                        <canvas id="chart4"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // ---- Shared chart settings ----
+            const numPoints = 10;
+            let distanceStart = 110;
+
+            const labels = [];
+            for (let i = 0; i < numPoints; i++) {
+                labels.push((distanceStart + i) + ' km');
+            }
+
+            function getRandomAccel(prev, maxStep = 0.2, min = -0.3, max = 1.5) {
+                let change = (Math.random() * 2 - 1) * maxStep;
+                let newVal = prev + change;
+                return Math.max(min, Math.min(max, newVal));
+            }
+
+            // Base data (same for all channels)
+            const initialData = {
+                set1: [0.4, 0.5, 0.3, 0.6, 0.5, 0.4, 0.7, 0.5, 0.6, 0.4],
+                set2: [0.2, 0.1, 0.3, 0.2, 0.4, 0.3, 0.2, 0.5, 0.3, 0.2],
+                set3: [0.5, 0.6, 0.4, 0.7, 0.6, 0.5, 0.8, 0.6, 0.7, 0.5],
+                set4: [0.3, 0.2, 0.4, 0.3, 0.5, 0.4, 0.3, 0.6, 0.4, 0.3]
+            };
+
+            // Colors (keep consistent across pages)
+            const colors = [
+                { border: '#4ec9b0', bg: 'rgba(78, 201, 176, 0.1)' },
+                { border: '#ffd966', bg: 'rgba(255, 217, 102, 0.1)' },
+                { border: '#f28b82', bg: 'rgba(242, 139, 130, 0.1)' },
+                { border: '#9bbb59', bg: 'rgba(155, 187, 89, 0.1)' }
+            ];
+
+            // Titles for different channel groups
+            const channelTitles = {
+                accelerometer: [
+                    'AB_LEFT VERTICAL',
+                    'AB_LEFT LATERAL',
+                    'AB_RIGHT VERTICAL',
+                    'AB_RIGHT LATERAL'
+                ],
+                gyroscope: [
+                    'LEFT ROLL RATE',
+                    'LEFT PITCH RATE',
+                    'RIGHT ROLL RATE',
+                    'RIGHT PITCH RATE'
+                ],
+                temperature: [
+                    'LEFT MOTOR TEMP',
+                    'LEFT AMBIENT',
+                    'RIGHT MOTOR TEMP',
+                    'RIGHT AMBIENT'
+                ]
+            };
+
+            // Create charts
+            function createChart(canvasId, dataArray, borderColor, bgColor) {
+                const ctx = document.getElementById(canvasId).getContext('2d');
+                return new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels.slice(),
+                        datasets: [{
+                            data: dataArray.slice(),
+                            backgroundColor: bgColor,
+                            borderColor: borderColor,
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.4,
+                            pointRadius: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 600 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: '#252526',
+                                titleColor: '#9cdcf1',
+                                bodyColor: '#cccccc',
+                                borderColor: borderColor
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: '#2a2a2a', borderColor: '#3c3c3c' },
+                                ticks: { color: '#aaaaaa', font: { size: 8, family: 'Courier New' }, maxRotation: 0, autoSkip: true },
+                                title: {
+                                    display: true,
+                                    text: 'Distance (km)',
+                                    color: '#9cdcf1',
+                                    font: { size: 8, family: 'Courier New' }
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: { color: '#2a2a2a', borderColor: '#3c3c3c' },
+                                ticks: { color: '#aaaaaa', font: { size: 8, family: 'Courier New' } },
+                                title: {
+                                    display: true,
+                                    text: 'Value',
+                                    color: '#9cdcf1',
+                                    font: { size: 8, family: 'Courier New' }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Initialize charts
+            const chart1 = createChart('chart1', initialData.set1, colors[0].border, colors[0].bg);
+            const chart2 = createChart('chart2', initialData.set2, colors[1].border, colors[1].bg);
+            const chart3 = createChart('chart3', initialData.set3, colors[2].border, colors[2].bg);
+            const chart4 = createChart('chart4', initialData.set4, colors[3].border, colors[3].bg);
+
+            const charts = [chart1, chart2, chart3, chart4];
+
+            // ---- Dropdown interaction ----
+            const dropdownItems = document.querySelectorAll('.dropdown-item');
+            const titleElements = [
+                document.getElementById('title1'),
+                document.getElementById('title2'),
+                document.getElementById('title3'),
+                document.getElementById('title4')
+            ];
+
+            function setActiveChannel(channel) {
+                // Update active class in dropdown
+                dropdownItems.forEach(item => {
+                    item.classList.remove('active');
+                    if (item.dataset.channel === channel) {
+                        item.classList.add('active');
+                    }
+                });
+
+                // Update graph titles
+                const titles = channelTitles[channel];
+                titleElements.forEach((el, idx) => {
+                    el.textContent = titles[idx];
+                });
+
+                // Optionally: update y-axis label based on channel
+                const yAxisTitle = channel === 'temperature' ? 'Temp (°C)' : 'Value';
+                charts.forEach(chart => {
+                    chart.options.scales.y.title.text = yAxisTitle;
+                    chart.update();
+                });
+            }
+
+            dropdownItems.forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const channel = item.dataset.channel;
+                    setActiveChannel(channel);
+                });
+            });
+
+            // Set initial active (accelerometer)
+            setActiveChannel('accelerometer');
+
+            // ---- Live update (shift data) ----
+            let currentDistance = distanceStart + numPoints;
+            setInterval(() => {
+                const newLabel = currentDistance + ' km';
+                currentDistance++;
+
+                function updateChartData(chart, maxStep, minVal, maxVal) {
+                    chart.data.labels.shift();
+                    chart.data.labels.push(newLabel);
+
+                    let lastVal = chart.data.datasets[0].data[chart.data.datasets[0].data.length - 1];
+                    let newVal = getRandomAccel(lastVal, maxStep, minVal, maxVal);
+                    chart.data.datasets[0].data.shift();
+                    chart.data.datasets[0].data.push(newVal);
+
+                    chart.update();
+                }
+
+                // Update each chart with appropriate ranges (same as before)
+                updateChartData(chart1, 0.15, 0.2, 1.2);
+                updateChartData(chart2, 0.2, -0.2, 1.0);
+                updateChartData(chart3, 0.18, 0.3, 1.4);
+                updateChartData(chart4, 0.2, -0.1, 1.1);
+            }, 1500);
+        })();
+    </script>
+</body>
+</html>
