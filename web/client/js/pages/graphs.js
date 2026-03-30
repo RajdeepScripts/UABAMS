@@ -8,20 +8,11 @@
 
 const SERVER_URL = window.location.origin;
 
-// ── Timestamp ─────────────────────────────────────────────────────────────
-(function tickTimestamp() {
-    const el = document.getElementById('currentTimestamp');
-    if (el) {
-        const n = new Date();
-        el.textContent = n.toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit', month: '2-digit', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
-        });
-    }
-    setTimeout(tickTimestamp, 1000);
-})();
+// ── Historical mode detection ─────────────────────────────────────────────
+const _gp        = new URLSearchParams(location.search);
+const _histFrom  = _gp.get('from');
+const _histTo    = _gp.get('to');
+const IS_HISTORICAL = !!(_histFrom && _histTo);
 
 // ── Channel derivation ────────────────────────────────────────────────────
 function getVert(x, y, z) { return Math.abs(z); }
@@ -223,24 +214,64 @@ if (typeof io === 'undefined') {
     console.error('[graphs] Socket.IO not loaded! Add this to graphs.html <head>:\n<script src="/socket.io/socket.io.js"><\/script>');
 }
 
-const socket = (typeof io !== 'undefined') ? io(SERVER_URL, {
-    transports: ['websocket', 'polling'],
-    reconnectionDelay: 1000,
-    reconnectionAttempts: Infinity
-}) : { on: () => {} }; // no-op fallback so rest of file doesn't crash
+// ── Historical data loader ────────────────────────────────────────────────
+async function loadHistoricalGraphData() {
+    try {
+        const url = new URL(`${SERVER_URL}/api/historical/graph/24`);
+        url.searchParams.set('from', _histFrom);
+        url.searchParams.set('to',   _histTo);
+        const data = await fetch(url).then(r => r.json());
+        if (!data.length) return;
+        // Fill distance chart with historical points (up to DIST_N)
+        const slice = data.slice(-DIST_N);
+        slice.forEach((pt, i) => {
+            distanceChart.data.labels[i]           = pt.timestamp ? new Date(pt.timestamp).toLocaleTimeString() : '';
+            distanceChart.data.datasets[0].data[i] = pt.accel1 || 0;
+            distanceChart.data.datasets[1].data[i] = 0; // lateral not in this endpoint
+            distanceChart.data.datasets[2].data[i] = pt.accel2 || 0;
+            distanceChart.data.datasets[3].data[i] = pt.magnitude || 0;
+        });
+        distanceChart.update('none');
+        console.log(`[graphs] Historical: ${data.length} points loaded`);
+    } catch (e) {
+        console.error('[graphs] Historical load failed:', e.message);
+    }
+}
 
-socket.on('connect',       () => console.log('[graphs] Socket connected ✓'));
-socket.on('disconnect',    r  => console.warn('[graphs] Disconnected:', r));
-socket.on('connect_error', e  => console.error('[graphs] Error:', e.message));
+const socket = (IS_HISTORICAL || typeof io === 'undefined') ? { on: () => {} }
+    : io(SERVER_URL, {
+        transports: ['websocket', 'polling'],
+        reconnectionDelay: 1000,
+        reconnectionAttempts: Infinity
+    });
+
+if (!IS_HISTORICAL) {
+    socket.on('connect',       () => console.log('[graphs] Socket connected ✓'));
+    socket.on('disconnect',    r  => console.warn('[graphs] Disconnected:', r));
+    socket.on('connect_error', e  => console.error('[graphs] Error:', e.message));
+}
 
 // ── Pre-fill all charts from DB on load ───────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    if (typeof window.preloadGraphHistory === 'function') {
+    if (IS_HISTORICAL) {
+        loadHistoricalGraphData();
+    } else if (typeof window.preloadGraphHistory === 'function') {
         window.preloadGraphHistory(distanceChart, subplots);
     }
 });
 
+// Respond to mode changes from shell
+window.addEventListener('message', (e) => {
+    if (!e.data) return;
+    if (e.data.mode === 'historical' || e.data.mode === 'live') {
+        location.href = e.data.mode === 'historical'
+            ? `${location.pathname}?from=${e.data.from}&to=${e.data.to}`
+            : location.pathname;
+    }
+});
+
 socket.on('accelerometer-data', data => {
+    if (IS_HISTORICAL) return;
     const side = data.sensor;
     if (side !== 'left' && side !== 'right') return;
 
@@ -271,7 +302,7 @@ socket.on('accelerometer-data', data => {
     document.getElementById(pfx + 'Y').textContent = y.toFixed(4) + ' g';
     document.getElementById(pfx + 'Z').textContent = z.toFixed(4) + ' g';
     const now = new Date();
-    document.getElementById(pfx + 'RefreshTime').textContent = '🕐 ' + now.toLocaleTimeString('en-IN', {hour12:false}) + '  ' + now.toLocaleDateString('en-IN');
+    document.getElementById(pfx + 'RefreshTime').textContent = '🕐 ' + now.toLocaleTimeString('en-GB', {hour12:false}) + '  ' + now.toLocaleDateString('en-GB');
 
     // ── Distance chart: left sensor drives label + distance advance ───────
     if (side === 'left') {
@@ -354,7 +385,7 @@ async function fetchRawFromDB() {
         // Latest values for the readout labels
         const latest = data[data.length - 1];
         const now    = new Date();
-        const ts     = '🕐 ' + now.toLocaleTimeString('en-IN', {hour12:false}) + '  ' + now.toLocaleDateString('en-IN');
+        const ts     = '🕐 ' + now.toLocaleTimeString('en-GB', {hour12:false}) + '  ' + now.toLocaleDateString('en-GB');
 
         if (latest.lv != null || latest.ll != null) {
             document.getElementById('raw1X').textContent = (latest.ll ?? 0).toFixed(4) + ' g';

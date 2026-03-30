@@ -94,19 +94,10 @@ if (debugToggle) {
 // ── Live / Pause toggle ───────────────────────────────────────────────────
 $('playPauseBtn')?.addEventListener('click', () => {
     isLiveStreaming = !isLiveStreaming;
-    const li  = $('liveIndicator');
-    const dot = $('liveDot');
-    const lt  = $('liveText');
-    const pi  = $('pauseIcon');
+    const pi = $('pauseIcon');
     if (isLiveStreaming) {
-        li?.classList.replace('paused','streaming');
-        dot?.classList.add('pulsing');
-        if (lt) lt.textContent = 'LIVE';
         if (pi) pi.innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
     } else {
-        li?.classList.replace('streaming','paused');
-        dot?.classList.remove('pulsing');
-        if (lt) lt.textContent = 'PAUSED';
         if (pi) pi.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
     }
 });
@@ -255,21 +246,17 @@ const socket = io(SERVER);
 
 socket.on('connect', () => {
     console.log('[operator] Socket connected:', socket.id);
-    setText('liveText', 'LIVE');
-    const dot = $('liveDot'); if (dot) dot.style.background = '#22c55e';
     loadHistoricalChart();
     // Always re-fetch stats from DB on (re)connect
     refreshStats();
 });
 
 socket.on('disconnect', () => {
-    setText('liveText', 'NO SERVER');
-    const dot = $('liveDot'); if (dot) dot.style.background = '#ef4444';
+    console.warn('[operator] Socket disconnected');
 });
 
 socket.on('connect_error', () => {
-    setText('liveText', 'ERROR');
-    const dot = $('liveDot'); if (dot) dot.style.background = '#f59e0b';
+    console.warn('[operator] Socket connection error');
 });
 
 socket.on('accelerometer-data', (data) => {
@@ -324,7 +311,7 @@ const HEALTH_COMPONENTS = [
 })();
 
 socket.on('system-health', (health) => {
-    const ts = new Date(health.timestamp || Date.now()).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+    const ts = new Date(health.timestamp || Date.now()).toLocaleTimeString();
 
     HEALTH_COMPONENTS.forEach(c => {
         const row  = $(c.id);

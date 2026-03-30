@@ -159,7 +159,7 @@ window.preloadGraphHistory = async function(distChart, subplotsObj, rollFn, push
             const z    = pt.z ?? 0;
             const vert = Math.abs(z);
             const lat  = Math.sqrt(x*x + y*y);
-            const lbl  = new Date(pt.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+            const lbl  = new Date(pt.timestamp).toLocaleTimeString();
 
             distChart.data.labels[i]                = lbl;
             distChart.data.datasets[0].data[i]      = vert;  // AB-L-VERT

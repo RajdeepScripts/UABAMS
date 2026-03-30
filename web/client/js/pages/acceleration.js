@@ -5,20 +5,6 @@ const CHART_POINTS = 120; // seconds visible on chart
 const STALE_MS     = 10000; // sensor offline if no data for 10s
 let   pollMinutes  = 2;    // window sent to API (matches time range btn)
 
-// ── Clock ──────────────────────────────────────────────────────────────────
-function updateTimestamp() {
-    const now = new Date();
-    document.getElementById('currentTimestamp').textContent =
-        now.toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit', month: '2-digit', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
-        });
-}
-setInterval(updateTimestamp, 1000);
-updateTimestamp();
-
 // ── Chart setup ───────────────────────────────────────────────────────────
 const channels = [
     { key: 'lv', name: 'AB-L-VERT', color: '#22c55e', legendId: 'legend1', metricId: 'metric1' },
@@ -97,14 +83,11 @@ async function fetchChannels() {
         const slice  = data.slice(-CHART_POINTS);
         const pad    = CHART_POINTS - slice.length;
 
-        // Append 'Z' so JS treats bare ISO strings as UTC (server stores UTC without Z)
-        const toUtc = ts => new Date(ts.endsWith('Z') ? ts : ts + 'Z');
-
         const labels = [...Array(pad).fill(''), ...slice.map(pt =>
-            toUtc(pt.ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }))];
+            new Date(pt.ts).toLocaleTimeString())];
 
         const now      = Date.now();
-        const latestTs = toUtc(slice[slice.length - 1].ts).getTime();
+        const latestTs = new Date(slice[slice.length - 1].ts).getTime();
         const ageSec   = Math.round((now - latestTs) / 1000);
 
         channels.forEach((ch, i) => {
@@ -128,24 +111,24 @@ async function fetchChannels() {
         mainChart.data.labels = labels;
         mainChart.update('none');
 
-        // Last seen badge — show actual date+time, colour by online status
-        const lastSeenStr = new Date(latestTs).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit', month: '2-digit', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
-        });
+        // Last update badge — check active-sensors for true online status
         fetch(`${API}/api/management/active-sensors`)
             .then(r => r.json())
             .then(s => {
                 const el = document.getElementById('lastUpdate');
-                el.textContent = lastSeenStr;
-                el.style.color = (s.online && s.online.length > 0) ? '#22c55e' : '#ef4444';
+                if (s.online && s.online.length > 0) {
+                    el.textContent = ageSec + 's ago (online)';
+                    el.style.color = '#22c55e';
+                } else {
+                    const latestTs2 = Object.values(s.last_seen || {}).sort().pop();
+                    el.textContent = latestTs2
+                        ? `last seen ${new Date(latestTs2).toLocaleTimeString()} (offline)`
+                        : `${ageSec}s ago (offline)`;
+                    el.style.color = '#ef4444';
+                }
             })
             .catch(() => {
-                const el = document.getElementById('lastUpdate');
-                el.textContent = lastSeenStr;
-                el.style.color = '';
+                document.getElementById('lastUpdate').textContent = ageSec + 's ago';
             });
 
         // Data points count

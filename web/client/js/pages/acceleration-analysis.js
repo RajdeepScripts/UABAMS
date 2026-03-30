@@ -166,7 +166,7 @@ function exportReport() {
     ]);
 
     const metadata = [
-        `Report Generated: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })}`,
+        `Report Generated: ${new Date().toLocaleString()}`,
         `Active Thresholds: P1:${thresholds.p1Min}-${thresholds.p1Max}g, P2:${thresholds.p2Min}-${thresholds.p2Max}g, P3:>${thresholds.p3Min}g`,
         `Peak Limits: ${peakLimits.join(', ')}g`,
         `Total Records: ${classified.length}`,

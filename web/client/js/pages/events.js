@@ -2,95 +2,54 @@
 
 const API = window.location.origin;
 
-let allEvents = [];
-let filterVal = 'all';
-let lastIsoTime = '';
+// Read date-range params (set by index.js when in historical mode)
+const _p        = new URLSearchParams(location.search);
+const _histFrom = _p.get('from');
+const _histTo   = _p.get('to');
 
-function normalise(d) {
-    const sev = (d.severity || '').toLowerCase();
-    return {
-        time:    d.timestamp ? new Date(d.timestamp).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit', month: '2-digit', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
-        }) : '—',
-        isoTime: d.timestamp || '',
-        location: d.distance_m > 0
-            ? `KM ${Math.floor(d.distance_m / 1000)}+${String(d.distance_m % 1000).padStart(3,'0')}`
-            : 'Stationary',
-        peak:    +(d.peak_g || d.gForce || 0).toFixed(2),
-        sensor:  d.sensor || '—',
-        severity: sev,
-        pClass:  d.p_class || null,
-        rmsV:    d.rmsV,
-        rmsL:    d.rmsL,
-        isNew:   false
-    };
-}
+let allImpacts = [];
 
-async function fetchEvents() {
-    const statusEl = document.getElementById('connStatus');
+async function loadImpacts() {
     try {
-        const data = await fetch(`${API}/api/impacts`).then(r => r.json());
-        const normalised = data.map(normalise);
-
-        // detect new arrivals (newer than last known)
-        if (lastIsoTime) {
-            normalised.forEach(e => {
-                if (e.isoTime > lastIsoTime) e.isNew = true;
-            });
-        }
-
-        // update lastIsoTime to most recent
-        if (normalised.length) {
-            const latest = normalised.reduce((a, b) => a.isoTime > b.isoTime ? a : b);
-            if (latest.isoTime > lastIsoTime) lastIsoTime = latest.isoTime;
-        }
-
-        const hadNew = normalised.some(e => e.isNew);
-        allEvents = normalised;
-        renderAll(hadNew);
-        if (statusEl) { statusEl.textContent = 'Live'; statusEl.className = 'conn-status conn-on'; }
+        const url = new URL(`${API}/api/impacts`);
+        if (_histFrom) url.searchParams.set('from', _histFrom);
+        if (_histTo)   url.searchParams.set('to',   _histTo);
+        const res  = await fetch(url);
+        allImpacts = await res.json();
     } catch (e) {
-        console.error('fetch impacts:', e);
-        if (statusEl) { statusEl.textContent = 'Offline'; statusEl.className = 'conn-status conn-off'; }
+        console.error('[events] Failed to load impacts:', e.message);
+        allImpacts = [];
     }
+    displayEvents();
 }
 
-// ── Render ────────────────────────────────────────────────────────────────
-function filtered() {
-    return filterVal === 'all' ? allEvents : allEvents.filter(e => e.severity === filterVal);
-}
+function displayEvents() {
+    const filter   = document.getElementById('severityFilter').value;
+    const filtered = filter === 'all'
+        ? allImpacts
+        : allImpacts.filter(e => (e.severity || '').toLowerCase() === filter);
 
-function pClassBadge(p) {
-    if (!p) return '';
-    const map = { P1: '#22c55e', P2: '#f59e0b', P3: '#ef4444' };
-    return `<span class="pclass-badge" style="background:${map[p]||'#94a3b8'}">${p}</span>`;
-}
+    document.getElementById('totalEvents').textContent  = filtered.length;
+    document.getElementById('highEvents').textContent   = filtered.filter(e => (e.severity || '').toUpperCase() === 'HIGH').length;
+    document.getElementById('mediumEvents').textContent = filtered.filter(e => (e.severity || '').toUpperCase() === 'MEDIUM').length;
+    document.getElementById('lowEvents').textContent    = filtered.filter(e => (e.severity || '').toUpperCase() === 'LOW').length;
 
-function cardHTML(ev) {
-    const newTag = ev.isNew ? '<span class="new-tag">NEW</span>' : '';
-    return `
-    <div class="event-card event-${ev.severity}${ev.isNew ? ' event-flash' : ''}">
-        <div class="event-left">
-            <div class="event-top-row">
-                ${newTag}
-                <span class="event-time">${ev.time}</span>
-                <span class="event-sensor">${ev.sensor}</span>
-                ${pClassBadge(ev.pClass)}
+    document.getElementById('eventsList').innerHTML = filtered.map(event => {
+        const sev      = (event.severity || 'low').toLowerCase();
+        const peak     = event.peak_g != null ? (+event.peak_g).toFixed(1) + ' g' : '—';
+        const time     = event.timestamp ? new Date(event.timestamp).toLocaleString() : (event.time || '—');
+        const location = event.distance_m != null
+            ? 'KM ' + (event.distance_m / 1000).toFixed(3)
+            : (event.location || '—');
+        return `
+        <div class="event-card event-${sev}">
+            <div class="event-info">
+                <span class="event-time">${time}</span>
+                <span class="event-location">${location}</span>
             </div>
-            <div class="event-bottom-row">
-                <span class="event-location"><i class="fas fa-map-marker-alt"></i> ${ev.location}</span>
-                ${ev.rmsV != null ? `<span class="event-meta">RMS-V ${ev.rmsV.toFixed(3)}g</span>` : ''}
-                ${ev.rmsL != null ? `<span class="event-meta">RMS-L ${ev.rmsL.toFixed(3)}g</span>` : ''}
-            </div>
-        </div>
-        <div class="event-right">
-            <span class="event-peak peak-${ev.severity}">${ev.peak.toFixed(1)} g</span>
-            <span class="sev-label sev-${ev.severity}">${ev.severity.toUpperCase()}</span>
-        </div>
-    </div>`;
+            <span class="event-peak peak-${sev}">${peak}</span>
+        </div>`;
+    }).join('');
 }
 
 function renderAll(flashDot = false) {
@@ -117,10 +76,24 @@ document.getElementById('severityFilter').addEventListener('change', e => {
 
 // ── Export ────────────────────────────────────────────────────────────────
 function exportEvents() {
-    window.open(`${API}/api/impacts/export/csv`, '_blank');
+    const params = new URLSearchParams();
+    if (_histFrom) params.set('from', _histFrom);
+    if (_histTo)   params.set('to',   _histTo);
+    window.location.href = `${API}/api/impacts/export/csv?${params}`;
 }
+
+document.getElementById('severityFilter').addEventListener('change', displayEvents);
+
+// Respond to mode changes from the shell (index.js postMessage)
+window.addEventListener('message', (e) => {
+    if (!e.data || e.data.type !== undefined) return; // ignore non-mode messages
+    if (e.data.mode === 'historical' || e.data.mode === 'live') {
+        location.href = e.data.mode === 'historical'
+            ? `${location.pathname}?from=${e.data.from}&to=${e.data.to}`
+            : location.pathname;
+    }
+});
+
 window.exportEvents = exportEvents;
 
-// ── Boot + poll every 2s ──────────────────────────────────────────────────
-fetchEvents();
-setInterval(fetchEvents, 2000);
+loadImpacts();

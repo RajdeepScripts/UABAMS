@@ -74,13 +74,14 @@ const initCouchDB = async () => {
         await nano.db.list();
         console.log('Connected to CouchDB');
 
+        // create if missing
+        for (const name of ['accelerometer_events', 'monitoring_data', 'realtime_data']) {
+            try { await nano.db.get(name); }
+            catch (e) { await nano.db.create(name); console.log(`Created ${name}`); }
+        }
         accelerometerEventsDB = nano.use('accelerometer_events');
         monitoringDataDB      = nano.use('monitoring_data');
-
-        // realtime_data — create if missing
-        try { await nano.db.get('realtime_data'); }
-        catch (e) { await nano.db.create('realtime_data'); console.log('Created realtime_data'); }
-        realtimeDataDB = nano.use('realtime_data');
+        realtimeDataDB        = nano.use('realtime_data');
 
         // ── Create Mango indexes so .find() queries actually work ──────────
         // Without these, CouchDB does a full scan which can fail or return
@@ -97,30 +98,6 @@ const initCouchDB = async () => {
     }
 };
 initCouchDB();
-
-// ── DB clock anchor — returns latest timestamp in realtimeDataDB ─────────
-// Fixes clock skew: if server clock is ahead of DB data, cutoffs are wrong
-let _dbLatestTs = null;  // cached, refreshed every 30s
-async function getDBNow() {
-    try {
-        const r = await realtimeDataDB.find({
-            selector: { timestamp: { $gt: '' } },
-            fields: ['timestamp'], sort: [{ timestamp: 'desc' }],
-            limit: 1, use_index: 'idx-timestamp'
-        });
-        if (r.docs.length) {
-            let dbTs = new Date(r.docs[0].timestamp);
-            // Also check peaksLog latest — use whichever is newer
-            if (peaksLog && peaksLog.length) {z
-                const logLatest = new Date(peaksLog[peaksLog.length - 1].timestamp);
-                if (logLatest > dbTs) dbTs = logLatest;
-            }
-            _dbLatestTs = dbTs;
-        }
-    } catch (e) { /* use cached or server clock */ }
-    return _dbLatestTs || new Date();
-}
-setInterval(() => getDBNow(), 30000);
 
 // ── MQTT ──────────────────────────────────────────────────────────────────
 let lastDataTimestamp = null;
@@ -204,10 +181,28 @@ let lastHealthStatus = null;
 let totalDistanceM = 0;
 let lastGpsCoord   = null; // { lat, lng } — used to calculate delta distance
 
+// ── Date-range helper — converts YYYY-MM-DD, YYYY-MM-DDTHH:MM, or full ISO to start/end ISO strings
+function parseDateRange({ hours = 24, from = null, to = null } = {}) {
+    function toStart(s) {
+        if (!s) return null;
+        if (s.length === 10) return s + 'T00:00:00.000Z'; // date only
+        if (s.length === 16) return s + ':00.000Z';        // datetime-local (no seconds)
+        return s;                                           // already ISO
+    }
+    function toEnd(s) {
+        if (!s) return null;
+        if (s.length === 10) return s + 'T23:59:59.999Z';
+        if (s.length === 16) return s + ':59.999Z';
+        return s;
+    }
+    const cutoff = toStart(from) || new Date(Date.now() - hours * 3600000).toISOString();
+    const until  = toEnd(to)     || new Date().toISOString();
+    return { cutoff, until };
+}
+
 // ── computeStats ──────────────────────────────────────────────────────────
-async function computeStats(hours = 24) {
-    const dbNow  = await getDBNow();
-    const cutoff = new Date(dbNow.getTime() - hours * 3600000).toISOString();
+async function computeStats({ hours = 24, from = null, to = null } = {}) {
+    const { cutoff, until } = parseDateRange({ hours, from, to });
 
     // ── CouchDB path ──────────────────────────────────────────────────────
     if (accelerometerEventsDB) {
@@ -215,7 +210,7 @@ async function computeStats(hours = 24) {
             const all  = await accelerometerEventsDB.list({ include_docs: true });
             const docs = all.rows
                 .map(r => r.doc)
-                .filter(d => d && d.timestamp && d.timestamp >= cutoff && !d._id.startsWith('_'))
+                .filter(d => d && d.timestamp && d.timestamp >= cutoff && d.timestamp <= until && !d._id.startsWith('_'))
                 .sort((a, b) => b.timestamp.localeCompare(a.timestamp)); // newest first
 
             if (docs.length > 0 || all.rows.length > 0) {
@@ -245,7 +240,7 @@ async function computeStats(hours = 24) {
 
     // ── JSON fallback ─────────────────────────────────────────────────────
     const recent  = peaksLog
-        .filter(p => p.timestamp >= cutoff)
+        .filter(p => p.timestamp >= cutoff && p.timestamp <= until)
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     const peaks   = recent.map(p => p.peak_g || 0);
     const lastDoc = recent[0];
@@ -271,7 +266,7 @@ async function computeStats(hours = 24) {
 app.get('/api/impacts/stats', async (req, res) => {
     try {
         const hours = parseInt(req.query.hours) || 24;
-        const stats = await computeStats(hours);
+        const stats = await computeStats({ hours, from: req.query.from, to: req.query.to });
         res.json(stats);
     } catch (e) {
         console.error('/api/impacts/stats error:', e);
@@ -378,24 +373,28 @@ app.get('/api/history/sensor', async (req, res) => {
 });
 
 app.get('/api/impacts', async (req, res) => {
+    const { cutoff, until } = parseDateRange({ from: req.query.from, to: req.query.to });
+    const hasRange = !!(req.query.from || req.query.to);
     try {
         if (accelerometerEventsDB) {
             const response = await accelerometerEventsDB.list(
-                { include_docs: true, descending: true, limit: 200 });
-            const docs = response.rows.map(r => r.doc).filter(d => d && !d._id?.startsWith('_'));
+                { include_docs: true, descending: true, limit: hasRange ? 5000 : 200 });
+            let docs = response.rows.map(r => r.doc).filter(d => d && !d._id?.startsWith('_'));
+            if (hasRange) docs = docs.filter(d => d.timestamp >= cutoff && d.timestamp <= until);
             if (docs.length) return res.json(docs);
         }
     } catch (e) { console.error('/api/impacts error:', e.message); }
-    res.json([...peaksLog].reverse().slice(0, 200));
+    let fallback = [...peaksLog].reverse();
+    if (hasRange) fallback = fallback.filter(p => p.timestamp >= cutoff && p.timestamp <= until);
+    res.json(fallback.slice(0, 200));
 });
 
 app.get('/api/historical/graph/:hours', async (req, res) => {
     try {
-        const hours     = parseInt(req.params.hours) || 24;
-        const dbNow     = await getDBNow();
-        const timeLimit = new Date(dbNow.getTime() - hours * 3600000).toISOString();
-        const response  = await monitoringDataDB.find({
-            selector: { timestamp: { $gte: timeLimit } },
+        const hours             = parseInt(req.params.hours) || 24;
+        const { cutoff, until } = parseDateRange({ hours, from: req.query.from, to: req.query.to });
+        const response          = await monitoringDataDB.find({
+            selector: { timestamp: { $gte: cutoff, $lte: until } },
             sort:     [{ timestamp: 'asc' }],
             limit:    2000
         });
@@ -426,15 +425,14 @@ app.get('/api/realtime/status', (req, res) => {
 
 // ── Management Dashboard APIs ─────────────────────────────────────────────
 
-// GET /api/management/sensor-chart?hours=24
+// GET /api/management/sensor-chart?hours=24 (or ?from=YYYY-MM-DD&to=YYYY-MM-DD)
 // Hourly-bucketed average gForce for the sensor performance line chart
 app.get('/api/management/sensor-chart', async (req, res) => {
-    const hours = Math.min(parseInt(req.query.hours) || 24, 168);
+    const hours             = Math.min(parseInt(req.query.hours) || 24, 168);
+    const { cutoff, until } = parseDateRange({ hours, from: req.query.from, to: req.query.to });
     try {
-        const dbNow  = await getDBNow();
-        const cutoff = new Date(dbNow.getTime() - hours * 3600000).toISOString();
         const all    = await realtimeDataDB.find({
-            selector: { timestamp: { $gte: cutoff } },
+            selector: { timestamp: { $gte: cutoff, $lte: until } },
             fields:   ['timestamp', 'gForce'],
             limit:    10000
         });
@@ -447,12 +445,14 @@ app.get('/api/management/sensor-chart', async (req, res) => {
             buckets[h].count += 1;
         }
 
-        const now    = new Date();
-        const result = [];
-        for (let i = hours - 1; i >= 0; i--) {
-            const d     = new Date(now.getTime() - i * 3600000);
+        const startMs    = new Date(cutoff).getTime();
+        const endMs      = new Date(until).getTime();
+        const rangeHours = Math.min(Math.ceil((endMs - startMs) / 3600000), 168);
+        const result     = [];
+        for (let i = 0; i < rangeHours; i++) {
+            const d     = new Date(startMs + i * 3600000);
             const h     = d.toISOString().slice(0, 13);
-            const label = `${String(d.getHours()).padStart(2, '0')}:00`;
+            const label = d.toISOString().slice(0, 16).replace('T', ' ');
             const b     = buckets[h];
             result.push({ label, avg: b ? +(b.sum / b.count).toFixed(4) : null });
         }
@@ -468,24 +468,11 @@ app.get('/api/management/sensor-chart', async (req, res) => {
 app.get('/api/acceleration/channels', async (req, res) => {
     try {
         const minutes = Math.min(parseInt(req.query.minutes) || 2, 1440);
-        // Find the latest timestamp in DB first, then work backwards from it
-        // This handles clock skew between server and stored data
-        const latestDoc = await realtimeDataDB.find({
-            selector: { timestamp: { $gt: '' } },
-            fields:   ['timestamp'],
-            sort:     [{ timestamp: 'desc' }],
-            limit:    1,
-            use_index: 'idx-timestamp'
-        });
-        const anchorTs  = latestDoc.docs.length
-            ? new Date(latestDoc.docs[0].timestamp)
-            : new Date();
-        const cutoff    = new Date(anchorTs.getTime() - minutes * 60000).toISOString();
-        const all       = await realtimeDataDB.find({
+        const cutoff  = new Date(Date.now() - minutes * 60000).toISOString();
+        const all     = await realtimeDataDB.find({
             selector: { timestamp: { $gte: cutoff } },
             fields:   ['sensor', 'x', 'y', 'z', 'timestamp'],
-            limit:    20000,
-            use_index: 'idx-timestamp'
+            limit:    20000
         });
 
         all.docs.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -515,8 +502,7 @@ app.get('/api/acceleration/channels', async (req, res) => {
 // Last 2 min of per-sensor readings for the rolling chart (stale = empty)
 app.get('/api/management/sensor-chart-recent', async (_req, res) => {
     try {
-        const dbNow  = await getDBNow();
-        const cutoff = new Date(dbNow.getTime() - 2 * 60000).toISOString();
+        const cutoff = new Date(Date.now() - 2 * 60000).toISOString();
         const all    = await realtimeDataDB.find({
             selector: { timestamp: { $gte: cutoff } },
             fields:   ['sensor', 'gForce', 'timestamp'],
@@ -542,21 +528,23 @@ app.get('/api/management/sensor-chart-recent', async (_req, res) => {
 // GET /api/management/uptime
 // % of hours in last 24 h that had at least one sensor reading
 app.get('/api/management/uptime', async (req, res) => {
-    const hours = 24;
     try {
-        const dbNow  = await getDBNow();
-        const cutoff = new Date(dbNow.getTime() - hours * 3600000).toISOString();
-        const all    = await realtimeDataDB.find({
-            selector: { timestamp: { $gte: cutoff } },
+        const { cutoff, until } = parseDateRange({ hours: 24, from: req.query.from, to: req.query.to });
+        const windowMs = new Date(until).getTime() - new Date(cutoff).getTime();
+        const hours    = Math.max(1, Math.round(windowMs / 3600000));
+        const all      = await realtimeDataDB.find({
+            selector: { timestamp: { $gte: cutoff, $lte: until } },
             fields:   ['timestamp'],
             limit:    10000
         });
         const activeHours = new Set(all.docs.map(d => d.timestamp.slice(0, 13)));
         const pct         = +((activeHours.size / hours) * 100).toFixed(1);
+        const lastDoc     = all.docs.length ? all.docs.reduce((a, b) => a.timestamp > b.timestamp ? a : b) : null;
         res.json({
             uptime_pct:      pct,
             active_hours:    activeHours.size,
             window_hours:    hours,
+            last_seen:       lastDoc ? lastDoc.timestamp : null,
             server_uptime_s: Math.floor(process.uptime())
         });
     } catch (e) {
@@ -566,16 +554,16 @@ app.get('/api/management/uptime', async (req, res) => {
 });
 
 // GET /api/management/active-sensors
-// Sensors seen in last 24 h; "online" = sent data in last 10 seconds
+// Sensors seen in last 24 h; "online" = sent data in last 10 seconds (live mode only)
 app.get('/api/management/active-sensors', async (req, res) => {
     try {
-        const dbNow     = await getDBNow();
-        const now       = dbNow.getTime();
-        const cutoff24h = new Date(now - 24 * 3600000).toISOString();
+        const isHistorical = !!(req.query.from && req.query.to);
+        const { cutoff, until } = parseDateRange({ hours: 24, from: req.query.from, to: req.query.to });
+        const now       = Date.now();
         const cutoff10s = new Date(now - 10 * 1000).toISOString();
 
         const all = await realtimeDataDB.find({
-            selector: { timestamp: { $gte: cutoff24h } },
+            selector: { timestamp: { $gte: cutoff, $lte: until } },
             fields:   ['sensor', 'timestamp'],
             limit:    10000
         });
@@ -588,9 +576,9 @@ app.get('/api/management/active-sensors', async (req, res) => {
         }
 
         const sensors = Object.keys(lastSeen);
-        // A sensor is "online" if it sent data in the last 10 seconds
-        const onlineSensors = sensors.filter(s => lastSeen[s] >= cutoff10s);
-        const knownSensors  = sensors.filter(s => lastSeen[s] <  cutoff10s);
+        // In historical mode all sensors in range are "known", none "online"
+        const onlineSensors = isHistorical ? [] : sensors.filter(s => lastSeen[s] >= cutoff10s);
+        const knownSensors  = isHistorical ? sensors : sensors.filter(s => lastSeen[s] <  cutoff10s);
 
         res.json({
             count:          onlineSensors.length,
@@ -609,9 +597,8 @@ app.get('/api/management/active-sensors', async (req, res) => {
 // HIGH/MEDIUM/LOW impact counts from peaksLog in last 24 h
 app.get('/api/management/active-alerts', async (req, res) => {
     try {
-        const dbNow  = await getDBNow();
-        const cutoff = new Date(dbNow.getTime() - 24 * 3600000).toISOString();
-        const recent = peaksLog.filter(p => p.timestamp >= cutoff);
+        const { cutoff, until } = parseDateRange({ hours: 24, from: req.query.from, to: req.query.to });
+        const recent = peaksLog.filter(p => p.timestamp >= cutoff && p.timestamp <= until);
         const high   = recent.filter(p => p.severity === 'HIGH').length;
         const medium = recent.filter(p => p.severity === 'MEDIUM').length;
         const low    = recent.filter(p => p.severity === 'LOW').length;
@@ -631,18 +618,18 @@ app.get('/api/management/active-alerts', async (req, res) => {
 // Last-known gForce per sensor (look back up to 6 h) → operational/warning/critical
 app.get('/api/management/system-health', async (req, res) => {
     try {
-        const dbNow    = await getDBNow();
-        const now      = dbNow.getTime();
-        const cutoff6h = new Date(now - 6 * 3600000).toISOString();
-        const cutoff5m = new Date(now - 5 * 60000).toISOString();
+        const isHistorical = !!(req.query.from && req.query.to);
+        const { cutoff, until } = parseDateRange({ hours: 24, from: req.query.from, to: req.query.to });
+        const now      = Date.now();
+        const cutoff10s = new Date(now - 10 * 1000).toISOString(); // live-only freshness check
 
         const all = await realtimeDataDB.find({
-            selector: { timestamp: { $gte: cutoff6h } },
+            selector: { timestamp: { $gte: cutoff, $lte: until } },
             fields:   ['sensor', 'gForce', 'timestamp'],
             limit:    5000
         });
 
-        // Keep latest reading per sensor
+        // Keep latest reading per sensor within the window
         const latest = {};
         for (const doc of all.docs) {
             if (!latest[doc.sensor] || doc.timestamp > latest[doc.sensor].timestamp)
@@ -652,7 +639,8 @@ app.get('/api/management/system-health', async (req, res) => {
         let operational = 0, warning = 0, critical = 0;
         for (const doc of Object.values(latest)) {
             const g      = doc.gForce || 0;
-            const isLive = doc.timestamp >= cutoff5m;
+            // In historical mode every sensor in the range counts as operational/warning/critical by gForce only
+            const isLive = isHistorical || doc.timestamp >= cutoff10s;
             if (!isLive) {
                 // sensor not seen recently → treat as offline (critical)
                 critical++;
@@ -697,8 +685,7 @@ io.on('connection', async (socket) => {
 
     // Send historical chart data
     try {
-        const dbNow     = await getDBNow();
-        const timeLimit = new Date(dbNow.getTime() - 86400000).toISOString();
+        const timeLimit = new Date(Date.now() - 86400000).toISOString();
         const response  = await monitoringDataDB.find({
             selector: { timestamp: { $gte: timeLimit } },
             sort: [{ timestamp: 'asc' }], limit: 2000
@@ -740,7 +727,6 @@ mqttClient.on('connect', () => {
         'adj/datalogger/sensors/right',
         'adj/datalogger/health',
         'adj/datalogger/sensors/accelerometer',
-        'adj/datalogger/sensors/gps',
         'sensor/railway/accelerometer/#',
         'sensor/accelerometer/#',
         'sensor/gps/#'
@@ -767,42 +753,6 @@ mqttClient.on('message', async (topic, message) => {
             lastHealthStatus = health; // persist for /api/latest/health
             console.log('Health:', health);
             io.emit('system-health', health);
-            return;
-        }
-
-        // ── GPS topic ─────────────────────────────────────────────────────
-        // Format: [GPS] T-13:13:47 D-27-03-2026 LAT:28584835N LON:77315948E SPD:25cm/s
-        if (topic === 'adj/datalogger/sensors/gps' || topic.includes('gps')) {
-            const latM  = msgStr.match(/LAT:(\d+)([NS])/i);
-            const lonM  = msgStr.match(/LON:(\d+)([EW])/i);
-            const spdM  = msgStr.match(/SPD:(\d+(?:\.\d+)?)cm\/s/i);
-
-            if (latM && lonM) {
-                // Raw values are in degrees * 1e6 (e.g. 28584835 → 28.584835)
-                const rawLat = parseInt(latM[1]);
-                const rawLon = parseInt(lonM[1]);
-                const lat = (rawLat / 1e6) * (latM[2].toUpperCase() === 'S' ? -1 : 1);
-                const lng = (rawLon / 1e6) * (lonM[2].toUpperCase() === 'W' ? -1 : 1);
-                const speedCms = spdM ? parseFloat(spdM[1]) : 0;
-                const speedKmh = +(speedCms * 0.036).toFixed(2); // cm/s → km/h
-
-                // Distance accumulation
-                if (lastGpsCoord) {
-                    const R    = 6371000; // Earth radius in metres
-                    const dLat = (lat - lastGpsCoord.lat) * Math.PI / 180;
-                    const dLon = (lng - lastGpsCoord.lng) * Math.PI / 180;
-                    const a    = Math.sin(dLat/2)**2 +
-                                 Math.cos(lastGpsCoord.lat * Math.PI/180) *
-                                 Math.cos(lat * Math.PI/180) *
-                                 Math.sin(dLon/2)**2;
-                    const d    = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-                    if (d < 500) totalDistanceM += d; // ignore GPS jumps > 500 m
-                }
-                lastGpsCoord = { lat, lng };
-
-                const gpsPayload = { lat, lng, speedKmh, totalDistanceM, timestamp };
-                io.emit('gps-data', gpsPayload);
-            }
             return;
         }
 
@@ -983,9 +933,8 @@ app.post('/api/reset', async (req, res) => {
 // Returns a properly formatted CSV matching the impact_report.csv structure
 // Columns: timestamp,sensor,severity,peak_g,gForce,rmsV,rmsL,sdV,sdL,p2pV,p2pL,x,y,z,fs,window_ms
 app.get('/api/impacts/export/csv', async (req, res) => {
-    const hours  = parseInt(req.query.hours) || 24;
-    const dbNow  = await getDBNow();
-    const cutoff = new Date(dbNow.getTime() - hours * 3600000).toISOString();
+    const hours             = parseInt(req.query.hours) || 24;
+    const { cutoff, until } = parseDateRange({ hours, from: req.query.from, to: req.query.to });
 
     let docs = [];
 
@@ -995,7 +944,7 @@ app.get('/api/impacts/export/csv', async (req, res) => {
             const all = await accelerometerEventsDB.list({ include_docs: true });
             docs = all.rows
                 .map(r => r.doc)
-                .filter(d => d && d.timestamp && d.timestamp >= cutoff && !d._id?.startsWith('_'))
+                .filter(d => d && d.timestamp && d.timestamp >= cutoff && d.timestamp <= until && !d._id?.startsWith('_'))
                 .sort((a, b) => b.timestamp.localeCompare(a.timestamp)); // newest first
         } catch (e) {
             console.error('[csv] CouchDB read failed, using JSON fallback:', e.message);
@@ -1005,7 +954,7 @@ app.get('/api/impacts/export/csv', async (req, res) => {
     // Fallback to peaks_log.json
     if (!docs.length) {
         docs = peaksLog
-            .filter(p => p.timestamp >= cutoff)
+            .filter(p => p.timestamp >= cutoff && p.timestamp <= until)
             .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     }
 

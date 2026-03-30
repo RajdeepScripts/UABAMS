@@ -106,7 +106,7 @@ function showHighSeverityPopup(impact) {
     popup.className = 'high-severity-popup';
     popup.innerHTML = `<strong>HIGH SEVERITY IMPACT</strong><br>
                        ${impact.peak_g.toFixed(2)}g detected<br>
-                       ${new Date(impact.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })}`;
+                       ${new Date(impact.timestamp).toLocaleTimeString()}`;
     document.body.appendChild(popup);
     setTimeout(() => popup.remove(), 5000);
 }
@@ -201,6 +201,27 @@ async function loadInitialAlerts() {
     }
 }
 
+// ── Data mode — live or historical ────────────────────────────────────────
+let dataMode   = { mode: 'live' };   // or { mode: 'historical', from, to }
+let mqttHandle = null;               // { pause, resume } returned by startMqttStatus
+
+function broadcastMode() {
+    const iframe = document.getElementById('content-frame');
+    if (iframe?.contentWindow) iframe.contentWindow.postMessage(dataMode, '*');
+}
+
+function setMqttPill(mode) {
+    const el   = document.getElementById('mqttStatus');
+    const text = document.getElementById('mqttText');
+    if (!el || !text) return;
+    if (mode === 'historical') {
+        el.className = 'mqtt-status historical';
+        text.textContent = 'Historical';
+    } else {
+        el.classList.remove('historical');
+    }
+}
+
 // ── iframe loader ─────────────────────────────────────────────────────────
 function loadPage(pageUrl) {
     const dynamicContent = document.getElementById('dynamicContent');
@@ -220,11 +241,16 @@ function loadPage(pageUrl) {
         if (!pageUrl.startsWith('pages/')) pageUrl = 'pages/' + pageUrl;
     }
 
+    // Append date range params when in historical mode
+    if (dataMode.mode === 'historical') {
+        pageUrl = pageUrl.split('?')[0] + `?from=${dataMode.from}&to=${dataMode.to}`;
+    }
+
     iframe.src = pageUrl;
     return false;
 }
 
-window.loadPage      = loadPage;
+window.loadPage       = loadPage;
 window.setAccelStatus = setAccelStatus;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
@@ -235,4 +261,68 @@ window.addEventListener('load', () => {
 
     // Socket.IO is loaded from CDN in the HTML <head>; connect immediately
     connectToBackend();
+
+    // MQTT status pill in top bar
+    mqttHandle = startMqttStatus({
+        interval: 2000,
+        onChange({ online, time_since_last }) {
+            const el   = document.getElementById('mqttStatus');
+            const text = document.getElementById('mqttText');
+            if (!el || !text) return;
+            el.classList.remove('historical');
+            el.classList.toggle('offline', !online);
+            if (online) {
+                text.textContent = 'LIVE';
+            } else {
+                const s   = time_since_last;
+                const ago = s == null  ? 'Offline'
+                          : s < 60    ? `${s}s ago`
+                          : `${Math.floor(s / 60)}m ago`;
+                text.textContent = ago;
+            }
+        }
+    });
+
+    // History dropdown toggle
+    document.getElementById('historyBtn')?.addEventListener('click', () => {
+        document.getElementById('historyDropdown')?.classList.toggle('open');
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!document.getElementById('historyControl')?.contains(e.target)) {
+            document.getElementById('historyDropdown')?.classList.remove('open');
+        }
+    });
+
+    // Apply historical range
+    document.getElementById('applyRange')?.addEventListener('click', () => {
+        const from = document.getElementById('rangeFrom').value;
+        const to   = document.getElementById('rangeTo').value;
+        if (!from || !to) return;
+        dataMode = { mode: 'historical', from, to };
+        // Update button label and pill
+        document.getElementById('historyBtnLabel').textContent = `${from} – ${to}`;
+        document.getElementById('historyBtn').classList.add('active');
+        document.getElementById('historyDropdown').classList.remove('open');
+        setMqttPill('historical');
+        mqttHandle?.pause();
+        // Reload current iframe with range params
+        const iframe = document.getElementById('content-frame');
+        if (iframe?.src) {
+            iframe.src = iframe.src.split('?')[0] + `?from=${from}&to=${to}`;
+        }
+    });
+
+    // Return to live
+    document.getElementById('goLive')?.addEventListener('click', () => {
+        dataMode = { mode: 'live' };
+        document.getElementById('historyBtnLabel').textContent = 'History';
+        document.getElementById('historyBtn').classList.remove('active');
+        document.getElementById('historyDropdown').classList.remove('open');
+        mqttHandle?.resume();
+        // Reload current iframe without params
+        const iframe = document.getElementById('content-frame');
+        if (iframe?.src) iframe.src = iframe.src.split('?')[0];
+    });
 });
