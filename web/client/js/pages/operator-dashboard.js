@@ -134,10 +134,21 @@ if (ctx) {
             responsive: true, maintainAspectRatio: false, animation: false,
             plugins: {
                 legend: { display: true, position: 'top', labels: { color: '#0f172a', font: { size: 11 } } },
-                tooltip: { backgroundColor: '#fff', titleColor: '#0f172a', bodyColor: '#0f172a', borderColor: '#e2e8f0', borderWidth: 1, padding: 12 }
+                tooltip: {
+                    backgroundColor: '#fff', titleColor: '#0f172a', bodyColor: '#0f172a',
+                    borderColor: '#e2e8f0', borderWidth: 1, padding: 12,
+                    callbacks: {
+                        label: ctx => `${ctx.dataset.label} Peak: ${ctx.parsed.y.toFixed(3)}g`
+                    }
+                }
             },
             scales: {
-                y: { min: 0, grid: { color: '#e2e8f0' }, ticks: { color: '#64748b', font: { size: 11 } } },
+                y: {
+                    suggestedMin: -2,
+                    suggestedMax: 2,
+                    grid: { color: '#e2e8f0' },
+                    ticks: { color: '#64748b', font: { size: 11 }, callback: v => v.toFixed(1) + 'g' }
+                },
                 x: { display: false }
             }
         }
@@ -213,22 +224,44 @@ function showHighGAlert(sensor, peakG) {
     }, 1000);
 }
 
+// ── Session timer ─────────────────────────────────────────────────────────
+const _sessionStart = Date.now();
+setInterval(() => {
+    const e = Date.now() - _sessionStart;
+    const h = Math.floor(e / 3600000);
+    const m = Math.floor((e % 3600000) / 60000);
+    const s = Math.floor((e % 60000) / 1000);
+    setText('sessionTimer',
+        `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
+}, 1000);
+
+// ── MQTT badge helpers ────────────────────────────────────────────────────
+function setMqttBadge(state) {
+    const text  = $('statusMqtt');
+    const badge = $('statusMqttBadge');
+    if (text)  text.textContent  = state === 'live' ? 'Connected' : state === 'error' ? 'Error' : 'Disconnected';
+    if (badge) { badge.textContent = state === 'live' ? 'LIVE' : 'OFFLINE'; badge.dataset.state = state; }
+}
+
 // ── Socket.IO ────────────────────────────────────────────────────────────
 const socket = io(SERVER);
 socket.on('connect', () => {
     console.log('[operator] Socket connected');
     setText('liveText', 'LIVE');
     const dot = $('liveDot'); if (dot) dot.style.background = '#22c55e';
+    setMqttBadge('live');
     loadHistoricalChart();
     refreshStats();
 });
 socket.on('disconnect', () => {
     setText('liveText', 'NO SERVER');
     const dot = $('liveDot'); if (dot) dot.style.background = '#ef4444';
+    setMqttBadge('offline');
 });
 socket.on('connect_error', () => {
     setText('liveText', 'ERROR');
     const dot = $('liveDot'); if (dot) dot.style.background = '#f59e0b';
+    setMqttBadge('error');
 });
 
 // ── System Health Grid (separate card) ───────────────────────────────────
@@ -422,7 +455,11 @@ socket.on('accelerometer-data', (data) => {
     // ODR decimation gate
     const _sid = data.sensor === 'left' ? 1 : data.sensor === 'right' ? 2 : null;
     if (_sid && typeof AccelConfig !== 'undefined' && !AccelConfig.shouldAccept(_sid)) return;
-    
+
+    // Update Last Data timestamp
+    const now = new Date();
+    setText('statusLastData', now.toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' }));
+
     if (data.sensor === 'left') {
         latestLeft = data;
         fillAccel('accel1', data);
@@ -434,7 +471,11 @@ socket.on('accelerometer-data', (data) => {
     }
     const peak = data.peak ?? data.gForce ?? 0;
     if (peak >= 8 && (data.sensor === 'left' || data.sensor === 'right')) showHighGAlert(data.sensor, peak);
-    pushToChart(latestLeft.gForce || 0, latestRight.gForce || 0);
+    // Use PEAK (max G within window) so spikes are visible, fall back to gForce
+    pushToChart(
+        latestLeft.peak  || latestLeft.gForce  || 0,
+        latestRight.peak || latestRight.gForce || 0
+    );
     updateHardwareStatus();
 });
 

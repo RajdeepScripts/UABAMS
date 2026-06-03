@@ -55,8 +55,11 @@ function getVert(x, y, z) { return Math.abs(z); }
 function getLat(x, y, z) { return Math.sqrt(x * x + y * y); }
 
 // ── Distance tracking ─────────────────────────────────────────────────────
-const BASE_DISTANCE_M = 1390 * 1000;
-let distanceM = BASE_DISTANCE_M;
+let distanceM = 0;
+const LIVE_DIST_N = 300;   // rolling window in live mode (~5 min at 1 packet/s)
+const MAX_DIST_POINTS = 10000;
+
+let distMode = 'live';     // 'live' | 'history'
 
 function formatDistLabel(m) {
     const km = Math.floor(m / 1000);
@@ -65,15 +68,12 @@ function formatDistLabel(m) {
 }
 function advanceDistance() { distanceM += 10; }
 
-// ── Rolling buffers ───────────────────────────────────────────────────────
-const DIST_N = 100;
+// ── Rolling buffers (for RCI and raw subplots only) ───────────────────────
 const RAW_N = 80;
 const RCI_N = 60;
 
 function zeroBuf(n, v = null) { return new Array(n).fill(v); }
 function emptyLabels(n) { return new Array(n).fill(''); }
-
-const initDistLabels = Array.from({ length: DIST_N }, (_, i) => formatDistLabel(BASE_DISTANCE_M + i * 10));
 
 function rollDataset(chart, datasetIndex, value, label) {
     const ds = chart.data.datasets[datasetIndex];
@@ -86,26 +86,132 @@ function rollDataset(chart, datasetIndex, value, label) {
 }
 
 // ── Distance Chart ────────────────────────────────────────────────────────
+let _distAutoFollow = true;
+
 const distanceChart = new Chart(document.getElementById('distanceChart').getContext('2d'), {
     type: 'line',
     data: {
-        labels: [...initDistLabels],
+        labels: [],
         datasets: [
-            { label: 'AB-L-VERT', data: zeroBuf(DIST_N), borderColor: '#22c55e', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
-            { label: 'AB-L-LAT',  data: zeroBuf(DIST_N), borderColor: '#eab308', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
-            { label: 'AB-R-VERT', data: zeroBuf(DIST_N), borderColor: '#ef4444', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
-            { label: 'AB-R-LAT',  data: zeroBuf(DIST_N), borderColor: '#8b5cf6', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false }
+            { label: 'AB-L-VERT', data: [], borderColor: '#22c55e', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
+            { label: 'AB-L-LAT',  data: [], borderColor: '#eab308', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
+            { label: 'AB-R-VERT', data: [], borderColor: '#ef4444', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false },
+            { label: 'AB-R-LAT',  data: [], borderColor: '#8b5cf6', borderWidth: 2, tension: 0.3, pointRadius: 0, spanGaps: false }
         ]
     },
     options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { display: false } },
+        plugins: {
+            legend: { display: false },
+            zoom: {
+                pan: {
+                    enabled: true, mode: 'x',
+                    onPanStart: () => { _distAutoFollow = false; }
+                },
+                zoom: {
+                    wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x',
+                    onZoomStart: () => { _distAutoFollow = false; }
+                }
+            }
+        },
         scales: {
-            y: { beginAtZero: true, title: { display: true, text: 'Acceleration (g)' }, grid: { color: '#f1f5f9' }, ticks: { callback: v => v.toFixed(3) } },
-            x: { title: { display: true, text: 'Distance (km)' }, ticks: { maxRotation: 45, maxTicksLimit: 10 } }
+            y: { suggestedMin: 0, suggestedMax: 2, title: { display: true, text: 'Acceleration (g)' }, grid: { color: '#f1f5f9' }, ticks: { callback: v => v.toFixed(2) + 'g' } },
+            x: { title: { display: true, text: 'Distance' }, ticks: { maxRotation: 45, maxTicksLimit: 12 } }
         }
     }
 });
+
+function _clearDistChart() {
+    distanceChart.data.labels = [];
+    distanceChart.data.datasets.forEach(ds => ds.data = []);
+    distanceChart.resetZoom();
+    distanceChart.update('none');
+}
+
+function _setDistBadge(mode) {
+    const badge = document.getElementById('distModeBadge');
+    const btnLive = document.getElementById('btnLiveMode');
+    if (badge) {
+        badge.textContent = mode === 'live' ? '● LIVE' : '◆ HISTORY';
+        badge.style.background = mode === 'live' ? '#22c55e' : '#0891b2';
+    }
+    if (btnLive) btnLive.style.display = mode === 'history' ? '' : 'none';
+}
+
+function _setDistMsg(msg) {
+    const el = document.getElementById('distChartMsg');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = msg ? '' : 'none';
+}
+
+function jumpToLatest() {
+    _distAutoFollow = true;
+    distanceChart.resetZoom();
+}
+
+function resetDistZoom() {
+    distanceChart.resetZoom();
+}
+
+function switchToLiveMode() {
+    distMode = 'live';
+    distanceM = 0;
+    _distAutoFollow = true;
+    _clearDistChart();
+    _setDistBadge('live');
+    _setDistMsg('');
+}
+
+async function loadHistoricalRange() {
+    const fromEl = document.getElementById('histFrom');
+    const toEl   = document.getElementById('histTo');
+    if (!fromEl.value || !toEl.value) { _setDistMsg('Please select both a From and To date/time.'); return; }
+
+    const fromISO = new Date(fromEl.value).toISOString();
+    const toISO   = new Date(toEl.value).toISOString();
+    if (fromISO >= toISO) { _setDistMsg('"From" must be before "To".'); return; }
+
+    _setDistMsg('Loading…');
+    try {
+        const res  = await fetch(`${SERVER_URL}/api/history/distance-chart?from=${encodeURIComponent(fromISO)}&to=${encodeURIComponent(toISO)}&limit=5000`);
+        const data = await res.json();
+        const left  = data.left  || [];
+        const right = data.right || [];
+
+        if (!left.length && !right.length) {
+            _setDistMsg('No data found for the selected period.');
+            return;
+        }
+
+        const n = Math.max(left.length, right.length);
+        const labels = [], lVert = [], lLat = [], rVert = [], rLat = [];
+        for (let i = 0; i < n; i++) {
+            const distM = i * 10;
+            const km = Math.floor(distM / 1000), rem = distM % 1000;
+            labels.push(km + '.' + String(rem).padStart(3, '0') + ' km');
+            if (left[i])  { const {x=0,y=0,z=0} = left[i];  lVert.push(Math.abs(z)); lLat.push(Math.sqrt(x*x+y*y)); }
+            else          { lVert.push(null); lLat.push(null); }
+            if (right[i]) { const {x=0,y=0,z=0} = right[i]; rVert.push(Math.abs(z)); rLat.push(Math.sqrt(x*x+y*y)); }
+            else          { rVert.push(null); rLat.push(null); }
+        }
+
+        distanceChart.data.labels           = labels;
+        distanceChart.data.datasets[0].data = lVert;
+        distanceChart.data.datasets[1].data = lLat;
+        distanceChart.data.datasets[2].data = rVert;
+        distanceChart.data.datasets[3].data = rLat;
+        distanceChart.resetZoom();
+        distanceChart.update('none');
+
+        distMode = 'history';
+        _distAutoFollow = false;
+        _setDistBadge('history');
+        _setDistMsg(`Showing ${n} points · ${fromEl.value.replace('T', ' ')} → ${toEl.value.replace('T', ' ')} · Drag to scroll, scroll wheel to zoom`);
+    } catch (e) {
+        _setDistMsg('Failed to load history: ' + e.message);
+    }
+}
 
 // ── Raw subplots ──────────────────────────────────────────────────────────
 function makeSubplot(id, color, initVal = 0) {
@@ -123,10 +229,10 @@ function makeSubplot(id, color, initVal = 0) {
             plugins: { legend: { display: false }, tooltip: { enabled: false } },
             scales: {
                 y: {
-                    suggestedMin: isZ ? 8.5 : -0.5,
-                    suggestedMax: isZ ? 11.0 : 0.5,
+                    suggestedMin: isZ ? 0.0 : -2.0,
+                    suggestedMax: isZ ? 2.0 :  2.0,
                     grid: { color: '#f1f5f9' },
-                    ticks: { maxTicksLimit: 3, font: { size: 9 }, color: '#94a3b8', callback: v => v.toFixed(2) }
+                    ticks: { maxTicksLimit: 3, font: { size: 9 }, color: '#94a3b8', callback: v => v.toFixed(2) + 'g' }
                 },
                 x: { display: false }
             }
@@ -476,9 +582,20 @@ socket.on('odr-config-changed', (cfg) => {
 });
 
 // ── Initial load ──────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Default the range pickers: today 00:00 → now
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const localNow  = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const localStart = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T00:00`;
+    const fromEl = document.getElementById('histFrom');
+    const toEl2  = document.getElementById('histTo');
+    if (fromEl) fromEl.value = localStart;
+    if (toEl2)  toEl2.value  = localNow;
+
+    // Pre-fill raw subplots only (fast — doesn't touch the distance chart)
     if (typeof window.preloadGraphHistory === 'function') {
-        window.preloadGraphHistory(distanceChart, subplots);
+        await window.preloadGraphHistory(null, subplots);
     }
 
     // Attach tab listeners
@@ -542,15 +659,22 @@ socket.on('accelerometer-data', data => {
     const now = new Date();
     document.getElementById(pfx + 'RefreshTime').textContent = '🕐 ' + now.toLocaleTimeString('en-IN', { hour12: false }) + ' ' + now.toLocaleDateString('en-IN');
 
-    // ── Distance chart (left sensor drives distance) ──────────────────────
-    if (side === 'left') {
+    // ── Distance chart (left sensor drives distance, live mode only) ─────
+    if (side === 'left' && distMode === 'live') {
         advanceDistance();
         const distLabel = formatDistLabel(distanceM);
 
-        rollDataset(distanceChart, 0, vert, distLabel);
-        rollDataset(distanceChart, 1, lat);
-        rollDataset(distanceChart, 2, cache.right.vert);
-        rollDataset(distanceChart, 3, cache.right.lat);
+        distanceChart.data.labels.push(distLabel);
+        distanceChart.data.datasets[0].data.push(vert);
+        distanceChart.data.datasets[1].data.push(lat);
+        distanceChart.data.datasets[2].data.push(cache.right.vert);
+        distanceChart.data.datasets[3].data.push(cache.right.lat);
+
+        // Roll off oldest once we exceed the live window
+        if (distanceChart.data.labels.length > LIVE_DIST_N) {
+            distanceChart.data.labels.shift();
+            distanceChart.data.datasets.forEach(ds => ds.data.shift());
+        }
     }
 
     // ── RCI: Use average RMS from both accelerometers ─────────────────────

@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Graphs - Datalogger</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <link rel="stylesheet" href="../css/common.css">
     <link rel="stylesheet" href="../css/pages/graphs.css">
@@ -22,14 +24,21 @@
 
         <!-- Acceleration vs Distance -->
         <div class="graph-card full-width" style="margin-bottom: 24px;">
-            <div class="graph-header">
-                <h2><i class="fas fa-chart-line"></i> Acceleration vs Distance — All Channels</h2>
-                <div class="graph-controls">
-                    <button class="graph-btn active" onclick="setDistanceRange('1km')">1km</button>
-                    <button class="graph-btn" onclick="setDistanceRange('5km')">5km</button>
-                    <button class="graph-btn" onclick="setDistanceRange('10km')">10km</button>
+            <div class="graph-header" style="flex-wrap:wrap;gap:10px;">
+                <h2 style="margin:0;"><i class="fas fa-chart-line"></i> Acceleration vs Distance — All Channels</h2>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span id="distModeBadge" style="font-size:0.75rem;font-weight:700;padding:3px 10px;border-radius:12px;background:#22c55e;color:#fff;letter-spacing:0.05em;">● LIVE</span>
+                    <!-- Date / time range picker -->
+                    <input type="datetime-local" id="histFrom" style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;" />
+                    <span style="font-size:0.8rem;color:#64748b;">→</span>
+                    <input type="datetime-local" id="histTo"   style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;" />
+                    <button class="graph-btn" onclick="loadHistoricalRange()" style="background:#0891b2;color:#fff;border:none;">Load History</button>
+                    <button class="graph-btn" id="btnLiveMode" onclick="switchToLiveMode()" style="display:none;">← Live</button>
+                    <button class="graph-btn" onclick="jumpToLatest()">Latest →</button>
+                    <button class="graph-btn" onclick="resetDistZoom()">Zoom Reset</button>
                 </div>
             </div>
+            <div id="distChartMsg" style="display:none;text-align:center;padding:12px;font-size:0.85rem;color:#64748b;"></div>
             <div class="chart-container" style="height: 300px;">
                 <canvas id="distanceChart"></canvas>
             </div>

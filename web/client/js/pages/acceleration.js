@@ -65,8 +65,14 @@ const mainChart = new Chart(ctx, {
         scales: {
             y: {
                 beginAtZero: false,
+                suggestedMin: -2,
+                suggestedMax: 2,
                 grid: { color: '#f1f5f9' },
-                ticks: { color: '#64748b', font: { size: 11 } }
+                ticks: {
+                    color: '#64748b',
+                    font: { size: 11 },
+                    callback: v => v.toFixed(1) + ' g'
+                }
             },
             x: { display: false }
         },

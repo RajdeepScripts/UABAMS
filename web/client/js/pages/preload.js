@@ -137,43 +137,19 @@ async function preloadAlerts() {
 
 // ── 4. Pre-populate graphs (distance chart + raw subplots) ─────────────────
 // This function is called by graphs.js after charts are initialized
-// Exposed as window.preloadGraphHistory so graphs.js can call it
-window.preloadGraphHistory = async function(distChart, subplotsObj, rollFn, pushSubFn, advFn, fmtLabelFn) {
+// Exposed as window.preloadGraphHistory so graphs.js can call it.
+// Returns the number of left-sensor points loaded so graphs.js can offset distanceM.
+// When distChart is null, only pre-fills raw subplots (fast path used on page load).
+window.preloadGraphHistory = async function(distChart, subplotsObj) {
     try {
-        const res  = await fetch(`${PRELOAD_SERVER}/api/history/sensor?limit=200`);
+        // Only fetch the last 80 points for raw subplots — small, fast query
+        const res  = await fetch(`${PRELOAD_SERVER}/api/history/sensor?limit=80`);
         const data = await res.json();
-        if (!data.length) return;
+        if (!data.length) return 0;
 
-        console.log('[preload] Graph history: ' + data.length + ' points');
-
-        // Separate left and right
         const left  = data.filter(d => d.sensor === 'left');
         const right = data.filter(d => d.sensor === 'right');
 
-        // Pre-fill distance chart (left drives labels, right fills ds 2&3)
-        // Use last DIST_N points from left
-        const slice = left.slice(-100);
-        slice.forEach((pt, i) => {
-            const x    = pt.x ?? 0;
-            const y    = pt.y ?? 0;
-            const z    = pt.z ?? 0;
-            distChart.data.datasets[0].data[i] = Math.abs(z);          // AB-L-VERT
-            distChart.data.datasets[1].data[i] = Math.sqrt(x*x + y*y); // AB-L-LAT
-        });
-
-        // Fill right channels from right history
-        const rslice = right.slice(-100);
-        rslice.forEach((pt, i) => {
-            const x    = pt.x ?? 0;
-            const y    = pt.y ?? 0;
-            const z    = pt.z ?? 0;
-            distChart.data.datasets[2].data[i] = Math.abs(z);          // AB-R-VERT
-            distChart.data.datasets[3].data[i] = Math.sqrt(x*x + y*y); // AB-R-LAT
-        });
-
-        distChart.update('none');
-
-        // Pre-fill raw subplots — last RAW_N points per side
         const fillSubplot = (chart, arr, extractFn) => {
             if (!chart) return;
             const pts = arr.slice(-80);
@@ -192,9 +168,11 @@ window.preloadGraphHistory = async function(distChart, subplotsObj, rollFn, push
             fillSubplot(subplotsObj.s2.z, right, d => d.z ?? 9.8);
         }
 
-        console.log('[preload] Charts pre-filled from DB history');
+        console.log('[preload] Raw subplots pre-filled');
+        return left.length;
     } catch (e) {
-        console.warn('[preload] Graph history fetch failed:', e.message);
+        console.warn('[preload] Subplot preload failed:', e.message);
+        return 0;
     }
 };
 

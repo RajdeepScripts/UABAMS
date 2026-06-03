@@ -282,7 +282,6 @@ function connectToBackend() {
         sensorCache[side].vert = vert;
         sensorCache[side].lat  = lat;
 
-        currentDistanceM += 5;
         updateNorthernPanel();
     });
 

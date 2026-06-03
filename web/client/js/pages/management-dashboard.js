@@ -56,7 +56,7 @@ const sensorChart = new Chart(sensorCtx, {
             }
         },
         scales: {
-            y: { min: 0, grid: { color: '#e2e8f0' }, ticks: { color: '#64748b', font: { size: 11 } } },
+            y: { suggestedMin: -2, suggestedMax: 2, grid: { color: '#e2e8f0' }, ticks: { color: '#64748b', font: { size: 11 }, callback: v => v.toFixed(1) + 'g' } },
             x: { display: false }
         }
     }
