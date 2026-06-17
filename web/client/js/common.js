@@ -3,8 +3,52 @@
    ============================================================ */
 
 // localStorage key constants
-const RM_THRESHOLDS_KEY = 'railmonitor_thresholds';
-const RM_LIMITS_KEY = 'railmonitor_peak_limits';
+const RM_THRESHOLDS_KEY  = 'railmonitor_thresholds';
+const RM_LIMITS_KEY      = 'railmonitor_peak_limits';
+const TEST_RUN_START_KEY = 'uabams_test_run_start';
+
+// ── Global Test Run state (persists across page navigation) ───────────────
+const TestRun = {
+    isRecording() { return !!localStorage.getItem(TEST_RUN_START_KEY); },
+    startTime()   { const v = localStorage.getItem(TEST_RUN_START_KEY); return v ? new Date(v) : null; },
+
+    start() {
+        localStorage.setItem(TEST_RUN_START_KEY, new Date().toISOString());
+        TestRun._syncUI();
+    },
+
+    stop() {
+        const t = TestRun.startTime();
+        localStorage.removeItem(TEST_RUN_START_KEY);
+        TestRun._syncUI();
+        return t;   // caller uses this as the "from" time
+    },
+
+    _timerRef: null,
+
+    _syncUI() {
+        const bar   = document.getElementById('globalTestBar');
+        if (!bar) return;
+        if (TestRun.isRecording()) {
+            bar.style.display = 'flex';
+            clearInterval(TestRun._timerRef);
+            TestRun._timerRef = setInterval(() => {
+                const el = document.getElementById('globalTestTimer');
+                if (!el) return;
+                const s = Math.round((Date.now() - TestRun.startTime()) / 1000);
+                el.textContent = `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+            }, 1000);
+        } else {
+            bar.style.display = 'none';
+            clearInterval(TestRun._timerRef);
+        }
+    },
+
+    init() { TestRun._syncUI(); }
+};
+
+// Auto-init on every page load
+document.addEventListener('DOMContentLoaded', () => TestRun.init());
 
 // Default values (mirror what configuration.html saves)
 const DEFAULT_THRESHOLDS = {

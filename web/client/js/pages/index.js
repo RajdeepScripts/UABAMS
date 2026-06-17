@@ -226,8 +226,9 @@ function updateGPSDisplay(location) {
         coordEl.textContent = location.latitude.toFixed(4) + '°, ' + location.longitude.toFixed(4) + '°';
     }
 
-    if (location.speed !== undefined && speedEl) {
-        speedEl.textContent = location.speed.toFixed(2) + ' km/h';
+    const spd = location.speedKmh ?? location.speed;
+    if (spd !== undefined && speedEl) {
+        speedEl.textContent = (+spd).toFixed(2) + ' km/h';
     }
 }
 
@@ -285,7 +286,7 @@ function connectToBackend() {
         updateNorthernPanel();
     });
 
-    socket.on('gps-update',  data   => updateGPSDisplay(data));
+    socket.on('gps-data',    data   => updateGPSDisplay(data));
     socket.on('new-impact',  impact => addImpactAlert(impact));
 
     socket.on('display-reset', () => {
@@ -330,6 +331,7 @@ function loadPage(pageUrl) {
     }
 
     iframe.src = pageUrl;
+    localStorage.setItem('last_page', pageUrl);
     return false;
 }
 
@@ -392,6 +394,10 @@ window.addEventListener('load', () => {
     // Remove any stale iframe
     const old = document.getElementById('content-frame');
     if (old) old.remove();
+
+    // Restore last visited page
+    const lastPage = localStorage.getItem('last_page');
+    if (lastPage) loadPage(lastPage);
 
     // Socket.IO is loaded from CDN in the HTML <head>; connect immediately
     connectToBackend();

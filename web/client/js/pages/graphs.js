@@ -60,6 +60,7 @@ const LIVE_DIST_N = 300;   // rolling window in live mode (~5 min at 1 packet/s)
 const MAX_DIST_POINTS = 10000;
 
 let distMode = 'live';     // 'live' | 'history'
+let distTimestamps = [];   // parallel to distanceChart.data.labels — ISO strings
 
 function formatDistLabel(m) {
     const km = Math.floor(m / 1000);
@@ -103,6 +104,20 @@ const distanceChart = new Chart(document.getElementById('distanceChart').getCont
         responsive: true, maintainAspectRatio: false, animation: false,
         plugins: {
             legend: { display: false },
+            tooltip: {
+                callbacks: {
+                    title(items) {
+                        const i = items[0].dataIndex;
+                        const dist = items[0].label;
+                        const ts = distTimestamps[i];
+                        if (!ts) return dist;
+                        const d = new Date(ts);
+                        const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+                        return `${dist}  ·  ${date} ${time}`;
+                    }
+                }
+            },
             zoom: {
                 pan: {
                     enabled: true, mode: 'x',
@@ -124,6 +139,7 @@ const distanceChart = new Chart(document.getElementById('distanceChart').getCont
 function _clearDistChart() {
     distanceChart.data.labels = [];
     distanceChart.data.datasets.forEach(ds => ds.data = []);
+    distTimestamps = [];
     distanceChart.resetZoom();
     distanceChart.update('none');
 }
@@ -186,10 +202,12 @@ async function loadHistoricalRange() {
 
         const n = Math.max(left.length, right.length);
         const labels = [], lVert = [], lLat = [], rVert = [], rLat = [];
+        distTimestamps = [];
         for (let i = 0; i < n; i++) {
             const distM = i * 10;
             const km = Math.floor(distM / 1000), rem = distM % 1000;
             labels.push(km + '.' + String(rem).padStart(3, '0') + ' km');
+            distTimestamps.push((left[i] || right[i] || {}).timestamp || null);
             if (left[i])  { const {x=0,y=0,z=0} = left[i];  lVert.push(Math.abs(z)); lLat.push(Math.sqrt(x*x+y*y)); }
             else          { lVert.push(null); lLat.push(null); }
             if (right[i]) { const {x=0,y=0,z=0} = right[i]; rVert.push(Math.abs(z)); rLat.push(Math.sqrt(x*x+y*y)); }
@@ -665,6 +683,7 @@ socket.on('accelerometer-data', data => {
         const distLabel = formatDistLabel(distanceM);
 
         distanceChart.data.labels.push(distLabel);
+        distTimestamps.push(new Date().toISOString());
         distanceChart.data.datasets[0].data.push(vert);
         distanceChart.data.datasets[1].data.push(lat);
         distanceChart.data.datasets[2].data.push(cache.right.vert);
@@ -673,6 +692,7 @@ socket.on('accelerometer-data', data => {
         // Roll off oldest once we exceed the live window
         if (distanceChart.data.labels.length > LIVE_DIST_N) {
             distanceChart.data.labels.shift();
+            distTimestamps.shift();
             distanceChart.data.datasets.forEach(ds => ds.data.shift());
         }
     }

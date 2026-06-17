@@ -7,6 +7,32 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="../css/common.css">
     <link rel="stylesheet" href="../css/pages/operator-dashboard.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <style>
+        .flatpickr-day.has-data { font-weight: 600; color: #15803d !important; position: relative; }
+        .flatpickr-day.has-data::after {
+            content: ''; position: absolute; bottom: 3px; left: 50%;
+            transform: translateX(-50%); width: 5px; height: 5px;
+            border-radius: 50%; background: #22c55e;
+        }
+        .flatpickr-day.has-data.selected,
+        .flatpickr-day.has-data.startRange,
+        .flatpickr-day.has-data.endRange { color: #fff !important; }
+        .g-history-bar {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            padding: 8px 0 4px;
+        }
+        .g-history-bar input[type=text] {
+            padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 6px;
+            font-size: 0.8rem; width: 155px; cursor: pointer; background: #fff;
+        }
+        .g-history-bar button {
+            padding: 4px 12px; border: none; border-radius: 6px;
+            font-size: 0.8rem; cursor: pointer; font-weight: 600;
+        }
+        .btn-load-g  { background: #0891b2; color: #fff; }
+        .btn-live-g  { background: #22c55e; color: #fff; }
+    </style>
 </head>
 <body>
     <!-- Header -->
@@ -142,6 +168,21 @@
             <span class="threshold-chip chip-p3" id="threshChipP3">P3: —</span>
         </div>
 
+        <!-- Test Run Recorder -->
+        <div id="testRecorderBar" style="display:flex;align-items:center;gap:12px;padding:10px 16px;
+             background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;margin-bottom:12px;flex-wrap:wrap;">
+            <button id="testStartBtn" onclick="startTestRun()" style="background:#16a34a;color:#fff;
+                border:none;border-radius:7px;padding:8px 20px;font-weight:700;font-size:0.85rem;cursor:pointer;">
+                ▶ Start Test Run
+            </button>
+            <button id="testStopBtn" onclick="stopTestRun()" style="display:none;background:#dc2626;color:#fff;
+                border:none;border-radius:7px;padding:8px 20px;font-weight:700;font-size:0.85rem;cursor:pointer;">
+                ⏹ Stop & Download Report
+            </button>
+            <span id="testStatusLabel" style="font-size:0.85rem;color:#15803d;font-weight:600;"></span>
+            <span id="testTimerLabel"  style="font-size:0.85rem;color:#374151;font-family:monospace;"></span>
+        </div>
+
         <!-- Action Buttons -->
         <div class="action-grid">
             <button class="action-btn primary">
@@ -226,6 +267,13 @@
                     <div class="card-title">
                         <h3>Live Accelerometer Data</h3>
                         <p>Peak G-force per window — axis auto-scales on impact</p>
+                        <div class="g-history-bar">
+                            <input type="text" id="gHistFrom" placeholder="From date & time" readonly />
+                            <span style="font-size:0.8rem;color:#64748b;">→</span>
+                            <input type="text" id="gHistTo"   placeholder="To date & time"   readonly />
+                            <button class="btn-load-g" onclick="loadGValueHistory()">Load History</button>
+                            <button class="btn-live-g" id="gLiveBtn" style="display:none;" onclick="switchGToLive()">← Live</button>
+                        </div>
                     </div>
                     <div class="card-actions">
                         <button class="icon-btn" id="playPauseBtn">
@@ -351,9 +399,33 @@
 
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="../js/common.js"></script>
     <script src="../js/pages/preload.js"></script>
     <script src="../js/pages/operator-dashboard.js"></script>
+    <script>
+    (async () => {
+        let dataDays = new Set();
+        try {
+            const r = await fetch('/api/dates-with-data');
+            dataDays = new Set(await r.json());
+        } catch (_) {}
+
+        const fpOpts = {
+            enableTime: true,
+            dateFormat: 'Y-m-dTH:i',
+            altInput: true,
+            altFormat: 'm/d/Y, h:i K',
+            time_24hr: false,
+            onDayCreate(_d, _s, _fp, dayElem) {
+                const iso = dayElem.dateObj.toLocaleDateString('en-CA');
+                if (dataDays.has(iso)) dayElem.classList.add('has-data');
+            }
+        };
+        flatpickr('#gHistFrom', fpOpts);
+        flatpickr('#gHistTo',   fpOpts);
+    })();
+    </script>
 </body>
 </html>

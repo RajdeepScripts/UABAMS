@@ -45,6 +45,14 @@
             </div>
         </nav>
         <div class="header-right">
+            <!-- Global Test Run indicator — shown on all pages while recording -->
+            <div id="globalTestBar" style="display:none;align-items:center;gap:6px;
+                 background:#dc2626;color:#fff;padding:4px 10px;border-radius:8px;
+                 font-size:0.78rem;font-weight:700;cursor:pointer;" onclick="window.location.href='/pages/operator-dashboard.html'">
+                <span style="animation:pulse 1s infinite;">⏺</span>
+                <span>REC</span>
+                <span id="globalTestTimer">00:00</span>
+            </div>
             <div class="mqtt-status" id="mqttStatus">
                 <span class="mqtt-dot"></span>
                 <span class="mqtt-text" id="mqttText">LIVE</span>
@@ -108,7 +116,7 @@
                     </div>
                     <div class="info-row">
                         <span class="info-label">Speed</span>
-                        <span class="info-value" id="speed">89.88 km/h</span>
+                        <span class="info-value" id="speed">— km/h</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Counter</span>

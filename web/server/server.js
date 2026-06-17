@@ -204,6 +204,10 @@ const mqttClient = mqtt.connect(`mqtt://${process.env.MQTT_HOST}:${process.env.M
 let odrConfig   = { accel1: 100, accel2: 100 };
 const odrCounters = { accel1: 0, accel2: 0 };
 
+// Track last packet time per sensor to detect offline sensors
+const sensorLastSeen = { s1: 0, s2: 0 };
+const SENSOR_TIMEOUT_MS = 10000; // 10 s — mark FAIL if no packet in this window
+
 function shouldEmit(sensorKey) {
     const odr    = odrConfig[sensorKey] || 200;
     const factor = Math.round(200 / odr);
@@ -547,6 +551,26 @@ app.get('/api/impacts', async (req, res) => {
         fallback = fallback.filter(p => p.timestamp >= cutoff);
     }
     res.json(fallback.slice(0, 2000));
+});
+
+// GET /api/history/g-value?from=ISO&to=ISO — peak g per sensor for operator dashboard
+app.get('/api/history/g-value', async (req, res) => {
+    try {
+        if (!pgReady) return res.json([]);
+        const { from, to } = req.query;
+        if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+        const r = await pool.query(`
+            SELECT sensor, peak, timestamp
+            FROM realtime_data
+            WHERE timestamp >= $1 AND timestamp <= $2
+            ORDER BY timestamp ASC
+            LIMIT 5000
+        `, [new Date(from).toISOString(), new Date(to).toISOString()]);
+        res.json(r.rows);
+    } catch (e) {
+        console.error('/api/history/g-value error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get('/api/historical/graph/:hours', async (req, res) => {
@@ -982,6 +1006,27 @@ app.get('/health', async (req, res) => {
     }
 });
 
+// GET /api/dates-with-data — returns array of "YYYY-MM-DD" strings that have records
+app.get('/api/dates-with-data', async (_req, res) => {
+    try {
+        if (pgReady) {
+            const r = await pool.query(`
+                SELECT DISTINCT to_char(DATE(timestamp AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD') AS day
+                FROM realtime_data
+                ORDER BY day DESC
+                LIMIT 365
+            `);
+            return res.json(r.rows.map(r => r.day));
+        }
+        // JSON fallback
+        const days = [...new Set(peaksLog.map(p => p.timestamp.slice(0, 10)))].sort().reverse();
+        res.json(days);
+    } catch (e) {
+        console.error('/api/dates-with-data error:', e.message);
+        res.status(500).json([]);
+    }
+});
+
 app.get('/api', (req, res) => {
     res.json({ message: 'Railway Monitoring API', endpoints: {
         impacts:          'GET /api/impacts',
@@ -1067,7 +1112,7 @@ mqttClient.on('message', async (topic, message) => {
         // EVENT:  13 bytes, first byte 0x03
         const pktType = message[0];
 
-        if (pktType === 0x03 && message.length === 13) {
+        if (pktType === 0x03 && message.length === 15) {
             const ts     = message.readUInt32LE(1);
             const s1_mag = message.readFloatLE(5);
             const s2_mag = message.readFloatLE(9);
@@ -1076,7 +1121,7 @@ mqttClient.on('message', async (topic, message) => {
             return;
         }
 
-        if ((pktType === 0x01 || pktType === 0x02) && message.length === 66) {
+        if ((pktType === 0x01 || pktType === 0x02) && message.length === 68) {
             const sensorSide = pktType === 0x01 ? 'left' : 'right';
 
             // ── Accelerometer fields (offsets per official packet spec) ───
@@ -1093,8 +1138,8 @@ mqttClient.on('message', async (topic, message) => {
             const ts    = message.readUInt32LE(41); // Timestamp (ms)
             const latRaw = message.readFloatLE(45); // Latitude  (raw × 1e6)
             const lonRaw = message.readFloatLE(49); // Longitude (raw × 1e6)
-            const sats  = message.readUInt8(53);    // Satellite count
-            // bytes 54–57: padding
+            const sats    = message.readUInt16LE(53); // Satellites (uint16)
+            const speedMs = message.readFloatLE(55);  // Speed cm/s (firmware packs gps_data.speed_cms)
             const hh    = message.readUInt8(59);    // Hour
             const mm_t  = message.readUInt8(60);    // Minute
             const ss    = message.readUInt8(61);    // Second
@@ -1106,17 +1151,21 @@ mqttClient.on('message', async (topic, message) => {
             const lng    = +(lonRaw / 1e6).toFixed(6);
             const gForce = Math.sqrt(x**2 + y**2 + z**2);
 
-            console.log(`[binary] [${sensorSide}]: Ax=${x.toFixed(4)} Ay=${y.toFixed(4)} Az=${z.toFixed(4)} gForce=${gForce.toFixed(4)} PEAK=${peak.toFixed(4)} RMS-V=${rmsV.toFixed(4)} RMS-L=${rmsL.toFixed(4)} SD-V=${sdV.toFixed(4)} SD-L=${sdL.toFixed(4)} P2P-V=${p2pV.toFixed(4)} P2P-L=${p2pL.toFixed(4)} GPS=${lat},${lng} SAT=${sats} ${String(hh).padStart(2,'0')}:${String(mm_t).padStart(2,'0')}:${String(ss).padStart(2,'0')} ${String(dd).padStart(2,'0')}/${String(mo).padStart(2,'0')}/${yr}`);
+            console.log(`[binary] [${sensorSide}]: Ax=${x.toFixed(4)} Ay=${y.toFixed(4)} Az=${z.toFixed(4)} gForce=${gForce.toFixed(4)} PEAK=${peak.toFixed(4)} RMS-V=${rmsV.toFixed(4)} RMS-L=${rmsL.toFixed(4)} SD-V=${sdV.toFixed(4)} SD-L=${sdL.toFixed(4)} P2P-V=${p2pV.toFixed(4)} P2P-L=${p2pL.toFixed(4)} GPS=${lat},${lng} SAT=${sats} SPD=${(speedMs*3.6).toFixed(1)}km/h ${String(hh).padStart(2,'0')}:${String(mm_t).padStart(2,'0')}:${String(ss).padStart(2,'0')} ${String(dd).padStart(2,'0')}/${String(mo).padStart(2,'0')}/${yr}`);
 
-            // Infer health from binary packet arrival (STM32 connects via W5500, no text health messages)
+            // Track last-seen time per sensor
+            if (pktType === 0x01) sensorLastSeen.s1 = Date.now();
+            if (pktType === 0x02) sensorLastSeen.s2 = Date.now();
+
+            const now = Date.now();
             const inferredHealth = Object.assign({}, lastHealthStatus || {}, {
                 w5500:      'OK',
                 phyLink:    'OK',
                 tcp:        'OK',
                 spi1:       'OK',
                 usart2:     'OK',
-                adxl345_s1: pktType === 0x01 ? 'OK' : (lastHealthStatus?.adxl345_s1 || 'OK'),
-                adxl345_s2: pktType === 0x02 ? 'OK' : (lastHealthStatus?.adxl345_s2 || 'OK'),
+                adxl345_s1: (now - sensorLastSeen.s1) < SENSOR_TIMEOUT_MS ? 'OK' : 'FAIL',
+                adxl345_s2: (now - sensorLastSeen.s2) < SENSOR_TIMEOUT_MS ? 'OK' : 'FAIL',
             });
             lastHealthStatus = inferredHealth;
             io.emit('system-health', inferredHealth);
@@ -1135,11 +1184,12 @@ mqttClient.on('message', async (topic, message) => {
                     if (d >= 5 && d < 500) totalDistanceM += d;
                 }
                 lastGpsCoord = { lat, lng };
-                io.emit('gps-data', { lat, lng, speedKmh: 0, totalDistanceM, timestamp });
+                const speedKmh = +(speedMs * 0.036).toFixed(2); // cm/s → km/h
+                io.emit('gps-data', { lat, lng, speedKmh, totalDistanceM, timestamp });
                 if (pgReady) {
                     pool.query(
                         'INSERT INTO rm_gps (timestamp, lat, lng, speed_kmh, total_distance_m) VALUES ($1,$2,$3,$4,$5)',
-                        [timestamp, lat, lng, 0, totalDistanceM]
+                        [timestamp, lat, lng, speedKmh, totalDistanceM]
                     ).catch(e => console.error('gps insert:', e.message));
                 }
             }
@@ -1436,6 +1486,96 @@ app.post('/api/reset', async (req, res) => {
 });
 
 // ── CSV Export endpoint ───────────────────────────────────────────────────
+// GET /api/test-report/csv?from=ISO&to=ISO
+// Exports every sensor window in the range as a paired S1+S2 CSV test report
+app.get('/api/test-report/csv', async (req, res) => {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).send('from and to required');
+
+    try {
+        if (!pgReady) return res.status(503).send('DB not ready');
+
+        const r = await pool.query(`
+            SELECT rd.sensor, rd.timestamp, rd.x, rd.y, rd.z, rd.g_force,
+                   rd.rms_v, rd.rms_l, rd.sd_v, rd.sd_l, rd.p2p_v, rd.p2p_l, rd.peak,
+                   g.lat, g.lng, g.speed_kmh, g.total_distance_m
+            FROM realtime_data rd
+            LEFT JOIN LATERAL (
+                SELECT lat, lng, speed_kmh, total_distance_m
+                FROM rm_gps
+                WHERE timestamp <= rd.timestamp
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ) g ON true
+            WHERE rd.timestamp >= $1 AND rd.timestamp <= $2
+            ORDER BY rd.timestamp ASC
+        `, [new Date(from).toISOString(), new Date(to).toISOString()]);
+
+        // Pair S1 and S2 readings by index order
+        const left  = r.rows.filter(r => r.sensor === 'left');
+        const right = r.rows.filter(r => r.sensor === 'right');
+        const n     = Math.max(left.length, right.length);
+
+        const fromDt  = new Date(from);
+        const toDt    = new Date(to);
+        const durMs   = toDt - fromDt;
+        const durSec  = Math.round(durMs / 1000);
+        const durStr  = `${Math.floor(durSec/60)}m ${durSec%60}s`;
+
+        const lines = [];
+        // Report header block
+        lines.push(`# UABAMS TEST RUN REPORT`);
+        lines.push(`# Date,${fromDt.toLocaleDateString('en-IN')}`);
+        lines.push(`# Start Time,${fromDt.toLocaleTimeString('en-IN')}`);
+        lines.push(`# End Time,${toDt.toLocaleTimeString('en-IN')}`);
+        lines.push(`# Duration,${durStr}`);
+        lines.push(`# Total Windows,${n}`);
+        lines.push(`# S1 Readings,${left.length}`);
+        lines.push(`# S2 Readings,${right.length}`);
+        lines.push('#');
+
+        // Column headers
+        lines.push([
+            'Window#','Timestamp',
+            'S1_Ax(g)','S1_Ay(g)','S1_Az(g)','S1_GForce(g)',
+            'S1_RMS_V','S1_RMS_L','S1_SD_V','S1_SD_L','S1_P2P_V','S1_P2P_L','S1_Peak(g)',
+            'S2_Ax(g)','S2_Ay(g)','S2_Az(g)','S2_GForce(g)',
+            'S2_RMS_V','S2_RMS_L','S2_SD_V','S2_SD_L','S2_P2P_V','S2_P2P_L','S2_Peak(g)',
+            'Lat','Lng','Speed_kmh','Distance_m'
+        ].join(','));
+
+        const fmt  = (v, d=4) => v != null ? (+v).toFixed(d) : '';
+        const fmt6 = (v)      => v != null ? (+v).toFixed(6) : '';
+
+        for (let i = 0; i < n; i++) {
+            const l  = left[i]  || {};
+            const r2 = right[i] || {};
+            const ts = (l.timestamp || r2.timestamp || '').toString();
+            // GPS comes from whichever sensor row has it (prefer left)
+            const gps = l.lat != null ? l : r2;
+            lines.push([
+                i + 1,
+                ts,
+                fmt(l.x), fmt(l.y), fmt(l.z), fmt(l.g_force),
+                fmt(l.rms_v), fmt(l.rms_l), fmt(l.sd_v), fmt(l.sd_l),
+                fmt(l.p2p_v), fmt(l.p2p_l), fmt(l.peak),
+                fmt(r2.x), fmt(r2.y), fmt(r2.z), fmt(r2.g_force),
+                fmt(r2.rms_v), fmt(r2.rms_l), fmt(r2.sd_v), fmt(r2.sd_l),
+                fmt(r2.p2p_v), fmt(r2.p2p_l), fmt(r2.peak),
+                fmt6(gps.lat), fmt6(gps.lng), fmt(gps.speed_kmh, 2), fmt(gps.total_distance_m, 1)
+            ].join(','));
+        }
+
+        const filename = `test_report_${fromDt.toISOString().slice(0,10)}_${fromDt.toTimeString().slice(0,8).replace(/:/g,'-')}.csv`;
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(lines.join('\r\n'));
+    } catch (e) {
+        console.error('/api/test-report/csv error:', e.message);
+        res.status(500).send('Export failed: ' + e.message);
+    }
+});
+
 // GET /api/impacts/export/csv?hours=24
 // Returns a properly formatted CSV matching the impact_report.csv structure
 // Columns: timestamp,sensor,severity,peak_g,rmsV,rmsL,sdV,sdL,p2pV,p2pL,x,y,z,fs,window_ms

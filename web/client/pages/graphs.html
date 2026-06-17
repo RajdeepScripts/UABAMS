@@ -11,6 +11,22 @@
     <script src="/socket.io/socket.io.js"></script>
     <link rel="stylesheet" href="../css/common.css">
     <link rel="stylesheet" href="../css/pages/graphs.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <style>
+        /* Green dot under dates that have data */
+        .flatpickr-day.has-data { position: relative; font-weight: 600; color: #15803d !important; }
+        .flatpickr-day.has-data::after {
+            content: '';
+            position: absolute;
+            bottom: 3px; left: 50%; transform: translateX(-50%);
+            width: 5px; height: 5px;
+            border-radius: 50%;
+            background: #22c55e;
+        }
+        .flatpickr-day.has-data.selected,
+        .flatpickr-day.has-data.startRange,
+        .flatpickr-day.has-data.endRange { color: #fff !important; }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -27,13 +43,11 @@
             <div class="graph-header" style="flex-wrap:wrap;gap:10px;">
                 <h2 style="margin:0;"><i class="fas fa-chart-line"></i> Acceleration vs Distance — All Channels</h2>
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <span id="distModeBadge" style="font-size:0.75rem;font-weight:700;padding:3px 10px;border-radius:12px;background:#22c55e;color:#fff;letter-spacing:0.05em;">● LIVE</span>
-                    <!-- Date / time range picker -->
-                    <input type="datetime-local" id="histFrom" style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;" />
+                    <!-- Date / time range picker (flatpickr — highlights days with data in green) -->
+                    <input type="text" id="histFrom" placeholder="From date & time" readonly style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;width:160px;cursor:pointer;" />
                     <span style="font-size:0.8rem;color:#64748b;">→</span>
-                    <input type="datetime-local" id="histTo"   style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;" />
+                    <input type="text" id="histTo"   placeholder="To date & time"   readonly style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.8rem;width:160px;cursor:pointer;" />
                     <button class="graph-btn" onclick="loadHistoricalRange()" style="background:#0891b2;color:#fff;border:none;">Load History</button>
-                    <button class="graph-btn" id="btnLiveMode" onclick="switchToLiveMode()" style="display:none;">← Live</button>
                     <button class="graph-btn" onclick="jumpToLatest()">Latest →</button>
                     <button class="graph-btn" onclick="resetDistZoom()">Zoom Reset</button>
                 </div>
@@ -169,8 +183,38 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="../js/common.js"></script>
     <script src="../js/pages/preload.js"></script>
     <script src="../js/pages/graphs.js"></script>
+    <script>
+    (async () => {
+        // Fetch dates that have data from the server
+        let dataDays = new Set();
+        try {
+            const r = await fetch('/api/dates-with-data');
+            const arr = await r.json();
+            dataDays = new Set(arr); // Set of "YYYY-MM-DD" strings
+        } catch (_) {}
+
+        const fpOpts = {
+            enableTime: true,
+            dateFormat: 'Y-m-dTH:i',         // ISO stored in .value — new Date() parses it directly
+            altInput: true,
+            altFormat: 'm/d/Y, h:i K',        // human-readable display
+            time_24hr: false,
+            onDayCreate(_dObj, _dStr, _fp, dayElem) {
+                const iso = dayElem.dateObj.toLocaleDateString('en-CA'); // "YYYY-MM-DD"
+                if (dataDays.has(iso)) dayElem.classList.add('has-data');
+            }
+        };
+
+        flatpickr('#histFrom', fpOpts);
+        flatpickr('#histTo',   fpOpts);
+
+        // Refresh the day highlighting whenever the month changes
+        // (flatpickr re-renders the calendar on month nav, onDayCreate fires again automatically)
+    })();
+    </script>
 </body>
 </html>

@@ -2,6 +2,65 @@
 
 const SERVER = window.location.origin;
 
+// ── Test Run Recorder — uses TestRun from common.js (persists across pages) ──
+function _testUISync() {
+    const recording = TestRun.isRecording();
+    document.getElementById('testStartBtn').style.display = recording ? 'none'         : 'inline-block';
+    document.getElementById('testStopBtn').style.display  = recording ? 'inline-block' : 'none';
+    if (recording) {
+        const t = TestRun.startTime();
+        document.getElementById('testStatusLabel').textContent =
+            `● Recording — started ${t.toLocaleTimeString('en-IN')}`;
+        clearInterval(window._localTestTimer);
+        window._localTestTimer = setInterval(() => {
+            const s  = Math.round((Date.now() - TestRun.startTime()) / 1000);
+            const el = document.getElementById('testTimerLabel');
+            if (el) el.textContent =
+                `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')} elapsed`;
+        }, 1000);
+    } else {
+        clearInterval(window._localTestTimer);
+        const lbl = document.getElementById('testTimerLabel');
+        if (lbl) lbl.textContent = '';
+    }
+}
+
+function startTestRun() {
+    TestRun.start();
+    _testUISync();
+}
+
+async function stopTestRun() {
+    if (!TestRun.isRecording()) return;
+    const startTime = TestRun.startTime();
+    const endTime   = new Date();
+    TestRun.stop();
+    _testUISync();
+
+    document.getElementById('testStatusLabel').textContent = 'Generating report…';
+    try {
+        const from = encodeURIComponent(startTime.toISOString());
+        const to   = encodeURIComponent(endTime.toISOString());
+        const res  = await fetch(`${SERVER}/api/test-report/csv?from=${from}&to=${to}`);
+        if (!res.ok) throw new Error(await res.text());
+
+        const blob = await res.blob();
+        const a    = document.createElement('a');
+        a.href     = URL.createObjectURL(blob);
+        a.download = `test_report_${startTime.toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+
+        const dur = Math.round((endTime - startTime) / 1000);
+        document.getElementById('testStatusLabel').textContent =
+            `✓ Report downloaded — ${Math.floor(dur/60)}m ${dur%60}s recorded`;
+    } catch (e) {
+        document.getElementById('testStatusLabel').textContent = `✗ Export failed: ${e.message}`;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', _testUISync);
+
 let isLiveStreaming  = true;
 let debugMode        = false;
 let sensorDataPoints = 50;
@@ -45,7 +104,7 @@ function applyStats(stats) {
         badge.style.background = style.bg;
         badge.style.color = style.color;
     }
-    setText('totalDistance', distM + ' m');
+    setText('totalDistance', (+distM).toFixed(1) + ' m');
     setText('distanceKm', (distM / 1000).toFixed(3) + ' km');
 }
 
@@ -172,6 +231,51 @@ function pushToChart(a1, a2) {
     chart.data.datasets[1].data = sensorData.map(d => d.accel2);
     chart.update('none');
 }
+async function loadGValueHistory() {
+    const fromEl = document.getElementById('gHistFrom');
+    const toEl   = document.getElementById('gHistTo');
+    if (!fromEl?.value || !toEl?.value) {
+        alert('Please select both a From and To date/time.');
+        return;
+    }
+    const fromISO = new Date(fromEl.value).toISOString();
+    const toISO   = new Date(toEl.value).toISOString();
+    if (fromISO >= toISO) { alert('"From" must be before "To".'); return; }
+
+    try {
+        const res  = await fetch(`${SERVER}/api/history/g-value?from=${encodeURIComponent(fromISO)}&to=${encodeURIComponent(toISO)}`);
+        const rows = await res.json();
+        if (!rows.length) { alert('No data found for the selected period.'); return; }
+
+        const leftRows  = rows.filter(r => r.sensor === 'left');
+        const rightRows = rows.filter(r => r.sensor === 'right');
+        const n = Math.max(leftRows.length, rightRows.length);
+
+        if (!chart) return;
+        chart.data.labels = Array.from({ length: n }, (_, i) => i + 1);
+        chart.data.datasets[0].data = leftRows.map(r => +(r.peak ?? 0));
+        chart.data.datasets[1].data = rightRows.map(r => +(r.peak ?? 0));
+        chart.options.plugins.title = { display: true, text: `G-Value History: ${fromEl._flatpickr?.altInput?.value || fromEl.value} → ${toEl._flatpickr?.altInput?.value || toEl.value}` };
+        chart.update();
+
+        isLiveStreaming = false;
+        document.getElementById('gLiveBtn').style.display = 'inline-block';
+    } catch (e) {
+        alert('Failed to load history: ' + e.message);
+    }
+}
+
+function switchGToLive() {
+    isLiveStreaming = true;
+    document.getElementById('gLiveBtn').style.display = 'none';
+    if (chart) {
+        chart.options.plugins.title = { display: false };
+        currentDataIndex = 0;
+        initializeSensorData();
+        loadHistoricalChart();
+    }
+}
+
 async function loadHistoricalChart() {
     try {
         const res = await fetch(`${SERVER}/api/historical/graph/24`);

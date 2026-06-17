@@ -12,7 +12,8 @@ import struct
 
 
 # ================= MQTT CONFIG =================
-MQTT_HOST = "192.168.0.156"
+MQTT_HOST = "192.168.1.10"
+#MQTT_HOST = "192.168.0.156"
 #MQTT_HOST = "192.168.0.125"
 #MQTT_HOST = "10.178.215.92"
 MQTT_PORT = 1883
@@ -31,13 +32,41 @@ MQTT_TOPIC_CLIENT_REQUEST      = "adj/datalogger/client_request"
 BAUD_RATE = 115200
 
 # ================= BINARY PACKET CONSTANTS =================
-# S1/S2: 1(type) + 10×4(floats) + 4(ts) + 4(lat) + 4(lon) + 1(sat) + 4(pad) + 6(HHMMSS+DDMM) + 2(year) = 66
-SENSOR_PKT_SIZE = 66
-# EVENT: 1(type) + 4(ts) + 4(s1_mag) + 4(s2_mag) = 13
-EVENT_PKT_SIZE  = 13
+# S1/S2 (68 bytes):
+#   byte 0      : type (0x01=S1, 0x02=S2)
+#   bytes 1-40  : Ax,Ay,Az,RMS_V,RMS_L,SD_V,SD_L,P2P_V,P2P_L,Peak (10 floats)
+#   bytes 41-44 : Uptime ms (uint32)
+#   bytes 45-48 : Latitude  (float, raw × 1e6)
+#   bytes 49-52 : Longitude (float, raw × 1e6)
+#   bytes 53-54 : Satellites (uint16)
+#   bytes 55-58 : Speed m/s  (float)
+#   byte  59    : Hour
+#   byte  60    : Minute
+#   byte  61    : Second
+#   byte  62    : Day
+#   byte  63    : Month
+#   bytes 64-65 : Year (uint16)
+#   bytes 66-67 : CRC16-CCITT
+SENSOR_PKT_SIZE = 68
+# EVENT (15 bytes):
+#   byte 0     : type (0x03)
+#   bytes 1-4  : Uptime ms (uint32)
+#   bytes 5-8  : S1 Peak   (float)
+#   bytes 9-12 : S2 Peak   (float)
+#   bytes 13-14: CRC16-CCITT
+EVENT_PKT_SIZE  = 15
 
-SENSOR_STRUCT = '<B10fIffB4xBBBBBBH'
-EVENT_STRUCT  = '<BIff'
+SENSOR_STRUCT = '<B10fIffHfBBBBBHH'
+EVENT_STRUCT  = '<BIffH'
+
+# ================= CRC16-CCITT (poly=0x1021, init=0xFFFF) =================
+def crc16(data):
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+    return crc
 
 running = True
 ser = None
@@ -91,37 +120,45 @@ def read_exact(s, n):
     return buf
 
 def parse_sensor_pkt(raw):
-    vals = struct.unpack(SENSOR_STRUCT, raw)
-    ptype, ax, ay, az, mag, gx, gy, gz, f8, f9, f10, ts, lat_r, lon_r, sats, ms_v, hh, mm, ss, dd, mo, yr = vals
+    rx_crc  = struct.unpack_from('<H', raw, 66)[0]
+    calc_crc = crc16(raw[:66])
+    if rx_crc != calc_crc:
+        raise ValueError(f"CRC mismatch: got 0x{rx_crc:04X} expected 0x{calc_crc:04X}")
+
+    ptype, ax, ay, az, rms_v, rms_l, sd_v, sd_l, p2p_v, p2p_l, peak, ts, lat_r, lon_r, sats, speed_ms, hh, mm, ss, dd, mo, yr, _ = struct.unpack(SENSOR_STRUCT, raw)
     return {
-        'type': 'sensor',
-        'sensor': 'S1' if ptype == 0x01 else 'S2',
+        'type':         'sensor',
+        'sensor':       'S1' if ptype == 0x01 else 'S2',
         'accel': {
-            'x':         round(float(ax),  4),
-            'y':         round(float(ay),  4),
-            'z':         round(float(az),  4),
-            'magnitude': round(float(mag), 4)
+            'x':     round(float(ax),    4),
+            'y':     round(float(ay),    4),
+            'z':     round(float(az),    4),
         },
-        'gyro': {
-            'x': round(float(gx), 4),
-            'y': round(float(gy), 4),
-            'z': round(float(gz), 4)
-        },
-        'field8':        round(float(f8),  4),
-        'field9':        round(float(f9),  4),
-        'field10':       round(float(f10), 4),
-        'timestamp_ms':  int(ts),
+        'rms_v':        round(float(rms_v),  4),
+        'rms_l':        round(float(rms_l),  4),
+        'sd_v':         round(float(sd_v),   4),
+        'sd_l':         round(float(sd_l),   4),
+        'p2p_v':        round(float(p2p_v),  4),
+        'p2p_l':        round(float(p2p_l),  4),
+        'peak':         round(float(peak),   4),
+        'timestamp_ms': int(ts),
         'gps': {
             'lat':        round(float(lat_r) / 1e6, 6),
             'lon':        round(float(lon_r) / 1e6, 6),
-            'satellites': int(sats)
+            'satellites': int(sats),
+            'speed_kmh':  round(float(speed_ms) * 0.036, 2),  # speed_cms → km/h
         },
         'time': f'{hh:02d}:{mm:02d}:{ss:02d}',
         'date': f'{dd:02d}/{mo:02d}/{yr:04d}'
     }
 
 def parse_event_pkt(raw):
-    ptype, ts, s1_mag, s2_mag = struct.unpack(EVENT_STRUCT, raw)
+    rx_crc   = struct.unpack_from('<H', raw, 13)[0]
+    calc_crc = crc16(raw[:13])
+    if rx_crc != calc_crc:
+        raise ValueError(f"CRC mismatch: got 0x{rx_crc:04X} expected 0x{calc_crc:04X}")
+
+    ptype, ts, s1_mag, s2_mag, _ = struct.unpack(EVENT_STRUCT, raw)
     return {
         'type':         'event',
         'timestamp_ms': int(ts),
@@ -249,7 +286,7 @@ def main():
 
             b = byte[0]
 
-            # ── Binary sensor packet (S1=0x01, S2=0x02) ──────────────────
+            # ── Binary sensor packet S1=0x01 (left), S2=0x02 (right) ─────
             if b in (0x01, 0x02):
                 text_buf = b''
                 rest = read_exact(ser, SENSOR_PKT_SIZE - 1)
@@ -259,13 +296,13 @@ def main():
                 try:
                     pkt   = parse_sensor_pkt(byte + rest)
                     topic = MQTT_TOPIC_LEFT if b == 0x01 else MQTT_TOPIC_RIGHT
-                    client.publish(topic, json.dumps(pkt))
+                    client.publish(topic, byte + rest)
                     print(f"\n📡 {pkt['sensor']} → {topic}")
                     print(f"   Accel : {pkt['accel']}")
-                    print(f"   Gyro  : {pkt['gyro']}")
+                    print(f"   Stats : rms_v={pkt['rms_v']} rms_l={pkt['rms_l']} peak={pkt['peak']}")
                     print(f"   GPS   : {pkt['gps']}  {pkt['time']} {pkt['date']}")
-                except struct.error as e:
-                    print(f"Sensor packet parse error: {e}")
+                except (struct.error, ValueError) as e:
+                    print(f"Sensor packet dropped: {e}")
                 continue
 
             # ── Binary event packet (EVENT=0x03) ──────────────────────────
@@ -277,11 +314,11 @@ def main():
                     continue
                 try:
                     pkt = parse_event_pkt(byte + rest)
-                    client.publish(MQTT_TOPIC_EVENT, json.dumps(pkt))
+                    client.publish(MQTT_TOPIC_EVENT, byte + rest)
                     print(f"\n🚨 EVENT → {MQTT_TOPIC_EVENT}")
                     print(f"   S1={pkt['s1']['magnitude']}g  S2={pkt['s2']['magnitude']}g")
-                except struct.error as e:
-                    print(f"Event packet parse error: {e}")
+                except (struct.error, ValueError) as e:
+                    print(f"Event packet dropped: {e}")
                 continue
 
             # ── Text byte accumulation ────────────────────────────────────
